@@ -19,8 +19,8 @@
 
 #define PIN_DIN 0
 #define PIN_CLK 1
-#define PIN_CS 2
-#define PIN_DC 3
+#define PIN_CS 2  // Must be CLK + 1
+#define PIN_DC 3  // Must be CLK + 2
 #define PIN_RESET 4
 #define PIN_BL 5
 
@@ -41,41 +41,44 @@ static const uint8_t st7789_init_seq[] = {
         0                                     // Terminate list
 };
 
-static inline void lcd_set_dc_cs(bool dc, bool cs) {
-    sleep_us(1);
-    gpio_put_masked((1u << PIN_DC) | (1u << PIN_CS), !!dc << PIN_DC | !!cs << PIN_CS);
-    sleep_us(1);
+static inline uint32_t st7789_encode_cmd(uint8_t cmd, uint32_t data_count)
+{
+  uint32_t instr = 0x100;
+  if (data_count) instr = (data_count * 8) << 8;
+  instr |= cmd;
+  return instr;
 }
 
 static inline void lcd_write_cmd(PIO pio, uint sm, const uint8_t *cmd, size_t count) {
-    st7789_lcd_wait_idle(pio, sm);
-    lcd_set_dc_cs(0, 0);
-    st7789_lcd_put(pio, sm, *cmd++);
-    if (count >= 2) {
-        st7789_lcd_wait_idle(pio, sm);
-        lcd_set_dc_cs(1, 0);
-        for (size_t i = 0; i < count - 1; ++i)
-            st7789_lcd_put(pio, sm, *cmd++);
+  st7789_lcd_wait_idle(pio, sm);
+
+  uint32_t instr = st7789_encode_cmd(cmd[0], count - 1);
+  pio_sm_put(pio, sm, instr);
+
+  if (count >= 2) {
+    assert(count <= 5);
+
+    instr = 0;
+    for (int i = 1; i < count; ++i) {
+      instr <<= 8;
+      instr |= cmd[i];
     }
-    st7789_lcd_wait_idle(pio, sm);
-    lcd_set_dc_cs(1, 1);
+    instr <<= 8 * (5 - count);
+    pio_sm_put(pio, sm, instr);
+  }
 }
 
 void st7789_init(PIO pio, uint sm) {
     uint offset = pio_add_program(pio, &st7789_lcd_program);
     st7789_lcd_program_init(pio, sm, offset, PIN_DIN, PIN_CLK, SERIAL_CLK_DIV);
 
-    gpio_init(PIN_CS);
-    gpio_init(PIN_DC);
     gpio_init(PIN_RESET);
     gpio_init(PIN_BL);
-    gpio_set_dir(PIN_CS, GPIO_OUT);
-    gpio_set_dir(PIN_DC, GPIO_OUT);
     gpio_set_dir(PIN_RESET, GPIO_OUT);
     gpio_set_dir(PIN_BL, GPIO_OUT);
 
-    gpio_put(PIN_CS, 1);
     gpio_put(PIN_RESET, 1);
+    gpio_put(PIN_BL, 0);
 
     const uint8_t *cmd = st7789_init_seq;
     while (*cmd) {
@@ -87,34 +90,37 @@ void st7789_init(PIO pio, uint sm) {
     gpio_put(PIN_BL, 1);
 }
 
-void st7789_start_pixels(PIO pio, uint sm) {
-    uint8_t cmd = 0x2c; // RAMWR
-    st7789_lcd_wait_idle(pio, sm);
-    st7789_set_pixel_mode(pio, sm, false);
-    lcd_write_cmd(pio, sm, &cmd, 1);
-    st7789_set_pixel_mode(pio, sm, true);
-    lcd_set_dc_cs(1, 0);
+void st7789_start_pixels(PIO pio, uint sm, uint32_t num_pixels) {
+  st7789_lcd_wait_idle(pio, sm);
+
+  // RAMWR
+  uint32_t cmd = st7789_encode_cmd(0x2c, num_pixels * 2);
+  pio_sm_put(pio, sm, cmd);
 }
 
-void st7789_start_pixels_at(PIO pio, uint sm, int x, int y) {
-    uint8_t ca_cmd[] = {0x2a, 0x00, x, 0x00, 0xf0}; // CASET: column addresses from 0 to 240 (f0)
-    uint8_t ra_cmd[] = {0x2b, 0x00, y, 0x00, 0xf0}; // RASET: row addresses from 0 to 240 (f0)
+void st7789_start_pixels_at(PIO pio, uint sm, uint8_t x, uint8_t y, uint32_t num_pixels) {
+  uint8_t ca_cmd[] = {0x2a, 0x00, x, 0x00, 0xf0}; // CASET: column addresses from 0 to 240 (f0)
+  uint8_t ra_cmd[] = {0x2b, 0x00, y, 0x00, 0xf0}; // RASET: row addresses from 0 to 240 (f0)
 
-    st7789_lcd_wait_idle(pio, sm);
-    st7789_set_pixel_mode(pio, sm, false);
-    lcd_write_cmd(pio, sm, ca_cmd, 5);
-    lcd_write_cmd(pio, sm, ra_cmd, 5);
+  lcd_write_cmd(pio, sm, ca_cmd, 5);
+  lcd_write_cmd(pio, sm, ra_cmd, 5);
 
-    uint8_t cmd = 0x2c; // RAMWR
-    lcd_write_cmd(pio, sm, &cmd, 1);
-    st7789_set_pixel_mode(pio, sm, true);
-    lcd_set_dc_cs(1, 0);
+  // RAMWR
+  uint32_t cmd = st7789_encode_cmd(0x2c, num_pixels * 2);
+  pio_sm_put(pio, sm, cmd);
 }
 
-void st7789_stop_pixels(PIO pio, uint sm) {
-    st7789_lcd_wait_idle(pio, sm);
-    lcd_set_dc_cs(1, 1);
-    st7789_set_pixel_mode(pio, sm, false);
+uint32_t st7789_add_pixels_at_cmd(uint32_t* buffer, uint8_t x, uint8_t y, uint32_t num_pixels) {
+  uint8_t ca_cmd[] = {0x2a, 0x00, x, 0x00, 0xf0};
+  uint8_t ra_cmd[] = {0x2b, 0x00, y, 0x00, 0xf0};
+
+  *buffer++ = st7789_encode_cmd(0x2a, 4);
+  *buffer++ = 0xf0 | ((uint32_t)x << 16);
+  *buffer++ = st7789_encode_cmd(0x2b, 4);
+  *buffer++ = 0xf0 | ((uint32_t)y << 16);
+  *buffer++ = st7789_encode_cmd(0x2c, num_pixels * 2);
+
+  return 5;
 }
 
 void st7789_create_dma_channels(PIO pio, uint sm, uint chan[2])
@@ -123,7 +129,7 @@ void st7789_create_dma_channels(PIO pio, uint sm, uint chan[2])
   chan[1] = dma_claim_unused_channel(true);
 
   dma_channel_config c = dma_channel_get_default_config(chan[0]);
-  channel_config_set_transfer_data_size(&c, DMA_SIZE_16);
+  channel_config_set_transfer_data_size(&c, DMA_SIZE_32);
   channel_config_set_dreq(&c, pio_get_dreq(pio, sm, true));
   channel_config_set_read_increment(&c, true);
   channel_config_set_write_increment(&c, false);
@@ -138,7 +144,7 @@ void st7789_create_dma_channels(PIO pio, uint sm, uint chan[2])
     );
 
   c = dma_channel_get_default_config(chan[1]);
-  channel_config_set_transfer_data_size(&c, DMA_SIZE_16);
+  channel_config_set_transfer_data_size(&c, DMA_SIZE_32);
   channel_config_set_dreq(&c, pio_get_dreq(pio, sm, true));
   channel_config_set_read_increment(&c, true);
   channel_config_set_write_increment(&c, false);
@@ -172,7 +178,7 @@ static inline void st7789_chain_or_trigger(uint this_chan, uint other_chan, uint
   }
 }
 
-void st7789_dma_pixels(uint chan[2], uint chan_idx, const uint16_t* pixels, uint num_pixels)
+void st7789_dma_buffer(uint chan[2], uint chan_idx, const uint32_t* data, uint len)
 {
   uint this_chan = chan[chan_idx];
   uint other_chan = chan[chan_idx ^ 1];
@@ -180,8 +186,8 @@ void st7789_dma_pixels(uint chan[2], uint chan_idx, const uint16_t* pixels, uint
   // Ensure any previous transfer is finished.
   dma_channel_wait_for_finish_blocking(this_chan);
 
-  dma_channel_hw_addr(this_chan)->read_addr = (uintptr_t)pixels;
-  dma_channel_hw_addr(this_chan)->transfer_count = num_pixels;
+  dma_channel_hw_addr(this_chan)->read_addr = (uintptr_t)data;
+  dma_channel_hw_addr(this_chan)->transfer_count = len;
   uint ctrl = dma_channel_hw_addr(this_chan)->ctrl_trig;
   ctrl &= ~DMA_CH0_CTRL_TRIG_CHAIN_TO_BITS;
   ctrl |= DMA_CH0_CTRL_TRIG_INCR_READ_BITS | (this_chan << DMA_CH0_CTRL_TRIG_CHAIN_TO_LSB);
@@ -189,11 +195,11 @@ void st7789_dma_pixels(uint chan[2], uint chan_idx, const uint16_t* pixels, uint
   st7789_chain_or_trigger(this_chan, other_chan, ctrl);
 }
 
-void st7789_dma_pixels_one_channel(uint chan, const uint16_t* pixels, uint num_pixels)
+void st7789_dma_buffer_one_channel(uint chan, const uint32_t* data, uint len)
 {
   dma_channel_wait_for_finish_blocking(chan);
-  dma_channel_hw_addr(chan)->read_addr = (uintptr_t)pixels;
-  dma_channel_hw_addr(chan)->transfer_count = num_pixels;
+  dma_channel_hw_addr(chan)->read_addr = (uintptr_t)data;
+  dma_channel_hw_addr(chan)->transfer_count = len;
   uint ctrl = dma_channel_hw_addr(chan)->ctrl_trig;
   ctrl &= ~DMA_CH0_CTRL_TRIG_CHAIN_TO_BITS;
   ctrl |= DMA_CH0_CTRL_TRIG_INCR_READ_BITS | (chan << DMA_CH0_CTRL_TRIG_CHAIN_TO_LSB);
@@ -209,9 +215,9 @@ void st7789_dma_repeat_pixel(uint chan[2], uint chan_idx, uint16_t pixel, uint r
 
   dma_channel_wait_for_finish_blocking(this_chan);
 
-  pixel_to_dma[chan_idx] = pixel;
+  pixel_to_dma[chan_idx] = ((uint32_t)pixel << 16) | pixel;
   dma_channel_hw_addr(this_chan)->read_addr = (uintptr_t)&pixel_to_dma[chan_idx];
-  dma_channel_hw_addr(this_chan)->transfer_count = repeats;
+  dma_channel_hw_addr(this_chan)->transfer_count = (repeats+1)>>1;
   uint ctrl = dma_channel_hw_addr(this_chan)->ctrl_trig;
   ctrl &= ~(DMA_CH0_CTRL_TRIG_INCR_READ_BITS | DMA_CH0_CTRL_TRIG_CHAIN_TO_BITS);
   ctrl |= this_chan << DMA_CH0_CTRL_TRIG_CHAIN_TO_LSB;
@@ -223,9 +229,10 @@ void st7789_dma_repeat_pixel_one_channel(uint chan, uint16_t pixel, uint repeats
 {
   dma_channel_wait_for_finish_blocking(chan);
 
-  pixel_to_dma[2] = pixel;
+  pixel_to_dma[2] = ((uint32_t)pixel << 16) | pixel;
+  //printf(" P: %08X * %d\n", pixel, (repeats+1)>>1);
   dma_channel_hw_addr(chan)->read_addr = (uintptr_t)&pixel_to_dma[2];
-  dma_channel_hw_addr(chan)->transfer_count = repeats;
+  dma_channel_hw_addr(chan)->transfer_count = (repeats+1)>>1;
   uint ctrl = dma_channel_hw_addr(chan)->ctrl_trig;
   ctrl &= ~(DMA_CH0_CTRL_TRIG_INCR_READ_BITS | DMA_CH0_CTRL_TRIG_CHAIN_TO_BITS);
   ctrl |= chan << DMA_CH0_CTRL_TRIG_CHAIN_TO_LSB;
