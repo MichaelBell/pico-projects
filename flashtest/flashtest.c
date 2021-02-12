@@ -52,11 +52,11 @@ void flash_stop_dma()
 
 int main()
 {
-    stdio_init_all();
+    //stdio_init_all();
 
     flash_dma_init();
 
-    puts("Hello, world!");
+    //puts("Hello, world!");
 
     // Start the streaming transfer from flash
     flash_start_dma((uint8_t*)flash_data);
@@ -79,9 +79,10 @@ int main()
       // First word to be transferred should always be 0xffff
       // Rest of the words just count up from 1.
       if (buff[0] != 0xffff) {
+        asm volatile ("bkpt");
         // Print out the first four words that were in the receiving buffer, 
         // and the count of correct transfers
-        printf("%08x %08x %08x %08x %d\n", buff[0], buff[1], buff[2], buff[3], count_correct);
+        //printf("%08x %08x %08x %08x %d\n", buff[0], buff[1], buff[2], buff[3], count_correct);
 
         // Reset and pause
         count_correct = 0;
