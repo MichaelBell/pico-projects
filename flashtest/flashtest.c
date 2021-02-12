@@ -3,7 +3,9 @@
 #include "pico/stdlib.h"
 #include "hardware/dma.h"
 #include "hardware/regs/addressmap.h"
+#include "hardware/regs/ssi.h"
 #include "hardware/structs/xip_ctrl.h"
+#include "hardware/structs/ssi.h"
 
 #include "flash_data.h"
 
@@ -46,6 +48,8 @@ void flash_stop_dma()
   if (dma_channel_is_busy(flash_dma_chan)) {
     xip_ctrl_hw->stream_ctr = 0;
     dma_channel_abort(flash_dma_chan);
+    //while (ssi_hw->sr & SSI_SR_BUSY_BITS);
+    (void)ssi_hw->sr;
     //sleep_us(1);  // Transfer reliable if you uncomment this
   }
 }
@@ -94,6 +98,11 @@ int main()
         flash_start_dma((uint8_t*)flash_data);
       }
       else count_correct++;
+
+      if (!(count_correct & 0xff)) {
+        printf("%d cycles OK\n", count_correct);
+        sleep_ms(100);
+      }
     }
 
     return 0;
