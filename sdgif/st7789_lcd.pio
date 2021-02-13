@@ -1,0 +1,71 @@
+;
+; Copyright (c) 2020 Raspberry Pi (Trading) Ltd.
+;
+; SPDX-License-Identifier: BSD-3-Clause
+;
+
+.program st7789_lcd
+.side_set 3
+
+; This transmits 32-bit DMA'd data of the form:
+; Header: | 24 bits            | 8 bits  |
+;         | Data bit count - 1 | Command |
+; Data: (data bit count)/8 data bytes
+; Bytes are sent from MSB first, so the last word should be right aligned
+; if the data byte count isn't a multiple of 4.
+; If the data byte count is not a multiple of 4 then the remaining part
+; of the word is discarded.
+; If no data is to be sent "data bit count - 1" should be 0, else it should
+; be the number of bits to be sent minus one.
+
+; Data on OUT pin 0
+; Clock on side-set pin 0
+; CS on side-set pin 1
+; D/C on side-set pin 2
+
+top:
+    out x, 24           side 0b110  ; Read data length
+    jmp !x, top         side 0b110  ; Discard if we just read all zeros
+
+    set y, 7            side 0b110  ; Send 8 bit command
+cmd_loop:
+    out pins, 1         side 0b000
+    jmp y--, cmd_loop   side 0b001
+
+    jmp x--, data_next  side 0b000  ; Data length 1 means no data,
+data_next:                          ; we never just have 1 bit
+    jmp !x, top         side 0b000  ; If no data go to next command
+
+data_loop:                          ; Send data
+    out pins, 1         side 0b100  
+    jmp x--, data_loop  side 0b101
+ 
+
+% c-sdk {
+
+static inline void st7789_lcd_program_init(PIO pio, uint sm, uint offset, uint data_pin, uint clk_pin, float clk_div) {
+    pio_gpio_init(pio, data_pin);
+    pio_gpio_init(pio, clk_pin);
+    pio_gpio_init(pio, clk_pin + 1);
+    pio_gpio_init(pio, clk_pin + 2);
+    pio_sm_set_consecutive_pindirs(pio, sm, data_pin, 1, true);
+    pio_sm_set_consecutive_pindirs(pio, sm, clk_pin, 3, true);
+    pio_sm_config c = st7789_lcd_program_get_default_config(offset);
+    sm_config_set_sideset_pins(&c, clk_pin);
+    sm_config_set_out_pins(&c, data_pin, 1);
+    sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_TX);
+    sm_config_set_clkdiv(&c, clk_div);
+    sm_config_set_out_shift(&c, false, true, 32);
+    pio_sm_init(pio, sm, offset, &c);
+    pio_sm_set_enabled(pio, sm, true);
+}
+
+// SM is done when it stalls on an empty FIFO
+
+static inline void st7789_lcd_wait_idle(PIO pio, uint sm) {
+    uint32_t sm_stall_mask = 1u << (sm + PIO_FDEBUG_TXSTALL_LSB);
+    pio->fdebug = sm_stall_mask;
+    while (!(pio->fdebug & sm_stall_mask))
+        ;
+}
+%}
