@@ -27,7 +27,6 @@
 static const unsigned char cGIFBits[9] = {1,4,4,4,8,8,8,8,8}; // convert odd bpp values to ones we can handle
 
 // forward references
-static int GIFInit(GIFIMAGE *pGIF);
 static int GIFParseInfo(GIFIMAGE *pPage, int bInfoOnly);
 static int GIFGetMoreData(GIFIMAGE *pPage);
 static void GIFMakePels(GIFIMAGE *pPage, unsigned int code);
@@ -218,7 +217,7 @@ static int32_t readFile(GIFFILE *pFile, uint8_t *pBuf, int32_t iLen)
 // returns 1 for success, 0 for failure
 // Fills in the canvas size of the GIFIMAGE structure
 //
-static int GIFInit(GIFIMAGE *pGIF)
+int GIFInit(GIFIMAGE *pGIF)
 {
     pGIF->GIFFile.iPos = 0; // start at beginning of file
     if (!GIFParseInfo(pGIF, 1)) // gather info for the first frame

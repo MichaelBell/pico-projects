@@ -190,6 +190,7 @@ class AnimatedGIF
     int GIF_getComment(GIFIMAGE *pGIF, char *destBuffer);
     int GIF_getInfo(GIFIMAGE *pGIF, GIFINFO *pInfo);
     int GIF_getLastError(GIFIMAGE *pGIF);
+    int GIFInit(GIFIMAGE *pGIF);
 #endif // __cplusplus
 
 // Due to unaligned memory causing an exception, we have to do these macros the slow way
