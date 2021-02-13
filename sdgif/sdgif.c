@@ -105,9 +105,9 @@ void sdgif_draw(GIFDRAW* pDraw)
   st7789_dma_buffer(&st, frame.st_data[st.chan_idx], stPtr - frame.st_data[st.chan_idx]);
 }
 
-#define SECTOR_START 1
+#define SECTOR_START 65536
 #define SD_BUFFER_SECTORS 4
-#define FILE_LEN 1428482
+#define FILE_LEN 4892075
 
 struct {
   uint32_t buffer[128 * SD_BUFFER_SECTORS];
@@ -187,7 +187,7 @@ int main()
       frame.minx = MAX(0, (DISPLAY_COLS - gif.iCanvasWidth) >> 1);
       frame.maxx = MIN(DISPLAY_COLS - 1, frame.minx + gif.iCanvasWidth);
       frame.miny = MAX(0, (DISPLAY_ROWS - gif.iCanvasHeight) >> 1);
-      frame.maxy = MIN(DISPLAY_ROWS - 1, frame.minx + gif.iCanvasHeight);
+      frame.maxy = MIN(DISPLAY_ROWS - 1, frame.miny + gif.iCanvasHeight);
 
       int delay = 10;
       absolute_time_t start_time = get_absolute_time();
