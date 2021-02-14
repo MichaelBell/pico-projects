@@ -105,51 +105,101 @@ void sdgif_draw(GIFDRAW* pDraw)
   st7789_dma_buffer(&st, frame.st_data[st.chan_idx], stPtr - frame.st_data[st.chan_idx]);
 }
 
-#define SECTOR_START 65536
-#define SD_BUFFER_SECTORS 4
+#define SD_SECTOR_START 65536
+#define SD_BUFFER_SECTORS 6
 #define FILE_LEN 4892075
 
-struct {
+typedef struct {
   uint32_t buffer[128 * SD_BUFFER_SECTORS];
   uint32_t buffer_start;
-} sd_data;
+} SDData;
+
+SDData sd_data[2];
+SDData* sd_data_read = &sd_data[0];
+SDData* sd_data_write = &sd_data[1];
+
+uint32_t read_stall_time;
+uint32_t seek_stall_time;
 
 void sdgif_init()
 {
-  sd_readblocks_sync(sd_data.buffer, SECTOR_START, SD_BUFFER_SECTORS);
-  sd_data.buffer_start = 0;
+  sd_readblocks_sync(sd_data_read->buffer, SD_SECTOR_START, SD_BUFFER_SECTORS);
+  sd_data_read->buffer_start = 0;
+  sd_readblocks_async(sd_data_write->buffer, SD_SECTOR_START + SD_BUFFER_SECTORS, SD_BUFFER_SECTORS);
+  sd_data_write->buffer_start = SD_BUFFER_SECTORS;
+
+  read_stall_time = 0;
+  seek_stall_time = 0;
 }
 
 int32_t sdgif_read(GIFFILE *pFile, uint8_t *pBuf, int32_t iLen)
 {
   assert(iLen <= 2 * SD_SECTOR_SIZE);
 
-  int32_t iBytesRead = MIN(iLen, FILE_LEN - pFile->iPos);
+  int32_t bytes_read = MIN(iLen, FILE_LEN - pFile->iPos);
+  int32_t bytes_to_read = bytes_read;
 
-  uint32_t offset_into_buffer = pFile->iPos - (sd_data.buffer_start << 9);
+  uint32_t offset_into_buffer = pFile->iPos - (sd_data_read->buffer_start << 9);
 
-  if (offset_into_buffer < 0 || offset_into_buffer + iBytesRead > SD_SECTOR_SIZE * SD_BUFFER_SECTORS) {
-    uint32_t sector = pFile->iPos >> 9;
-    if (sd_data.buffer_start != sector) {
-      sd_readblocks_sync(sd_data.buffer, sector + SECTOR_START, SD_BUFFER_SECTORS);
-      sd_data.buffer_start = sector;
+  if (offset_into_buffer < 0 || offset_into_buffer + bytes_to_read > SD_SECTOR_SIZE * SD_BUFFER_SECTORS) {
+    uint32_t offset_into_wr_buffer = pFile->iPos - (sd_data_write->buffer_start << 9);
+    if (offset_into_buffer >= 0 && offset_into_wr_buffer + bytes_to_read <= SD_SECTOR_SIZE * SD_BUFFER_SECTORS) {
+      int rc;
+
+      int32_t bytes_in_read_buffer = SD_SECTOR_SIZE * SD_BUFFER_SECTORS - offset_into_buffer;
+      if (bytes_in_read_buffer > 0)
+      {
+        memcpy(pBuf, (uint8_t*)sd_data_read->buffer + offset_into_buffer, bytes_in_read_buffer);
+        pBuf += bytes_in_read_buffer;
+        bytes_to_read -= bytes_in_read_buffer;
+        offset_into_buffer = 0;
+      }
+      else
+      {
+        offset_into_buffer = offset_into_wr_buffer;
+      }
+
+      if (!sd_scatter_read_complete(&rc))
+      {
+        absolute_time_t start_stall = get_absolute_time();
+        while (!sd_scatter_read_complete(&rc));
+        read_stall_time += absolute_time_diff_us(start_stall, get_absolute_time());
+      }
+
+      SDData* tmp = sd_data_read;
+      sd_data_read = sd_data_write;
+      sd_data_write = tmp;
+      sd_data_write->buffer_start += 2*SD_BUFFER_SECTORS;
+      sd_readblocks_async(sd_data_write->buffer, SD_SECTOR_START + sd_data_write->buffer_start, SD_BUFFER_SECTORS);
     }
+    else
+    {
+      int rc;
+      absolute_time_t start_stall = get_absolute_time();
+      while (!sd_scatter_read_complete(&rc));
 
-    offset_into_buffer = pFile->iPos - (sd_data.buffer_start << 9);
+      sd_data_read->buffer_start = pFile->iPos >> 9;
+      sd_readblocks_sync(sd_data_read->buffer, SD_SECTOR_START + sd_data_read->buffer_start, SD_BUFFER_SECTORS);
+      offset_into_buffer = pFile->iPos & 0x1ffu;
+      seek_stall_time += absolute_time_diff_us(start_stall, get_absolute_time());
+
+      sd_data_write->buffer_start = sd_data_read->buffer_start + SD_BUFFER_SECTORS;
+      sd_readblocks_async(sd_data_write->buffer, SD_SECTOR_START + sd_data_write->buffer_start, SD_BUFFER_SECTORS);
+    }
     assert(offset_into_buffer >= 0 && offset_into_buffer <= SD_SECTOR_SIZE * SD_BUFFER_SECTORS);
   }
 
-  memcpy(pBuf, (uint8_t*)sd_data.buffer + offset_into_buffer, iBytesRead);
+  memcpy(pBuf, (uint8_t*)sd_data_read->buffer + offset_into_buffer, bytes_to_read);
 
-  pFile->iPos += iBytesRead;
-  return iBytesRead;
+  pFile->iPos += bytes_read;
+  return bytes_read;
 }
 
 int32_t sdgif_seek(GIFFILE *pFile, int32_t iPosition)
 {
   if (iPosition < 0) iPosition = 0;
   else if (iPosition >= pFile->iSize) iPosition = pFile->iSize-1;
-  
+
   pFile->iPos = iPosition;
   return pFile->iPos;
 }
@@ -194,8 +244,10 @@ int main()
       while (GIF_playFrame(&gif, &delay)) {
         uint32_t frame_time = absolute_time_diff_us(start_time, get_absolute_time()) / 1000;
         delay -= frame_time;
-        printf("Frame time %dms\n", frame_time);
-        delay -= 100;
+        printf("Frame time %dms \tRead stall: %dus \tSeek stall %dus\n", frame_time, read_stall_time, seek_stall_time);
+        read_stall_time = 0;
+        seek_stall_time = 0;
+
         if (delay > 0)
           sleep_ms(delay);
 
