@@ -29,6 +29,7 @@
 
 // Format: cmd length (including cmd byte), post delay in units of 5 ms, then cmd payload
 // Note the delays have been shortened a little
+#if 1
 static const uint8_t st7789_init_seq[] = {
         1, 20, 0x01,                         // Software reset
         1, 10, 0x11,                         // Exit sleep mode
@@ -41,6 +42,30 @@ static const uint8_t st7789_init_seq[] = {
         1, 2, 0x29,                         // Main screen turn on, then wait 500 ms
         0                                     // Terminate list
 };
+#else
+// Modified sequence from Pimoroni's python library
+// This plays with some power settings which makes the image slightly brighter,
+// but if anything seems to make flickering slightly worse.
+static const uint8_t st7789_init_seq[] = {
+        1, 30, 0x01,
+        2, 0, 0x36, 0x00,
+        2, 0, 0x3A, 0x55,
+        2, 0, 0xB7, 0x14,
+        2, 0, 0xBB, 0x37,
+        3, 0, 0xC2, 0x01, 0xFF,
+        2, 0, 0xC3, 0x12,
+        2, 0, 0xC4, 0x20,
+        3, 0, 0xD0, 0xA4, 0XA1,
+        2, 0, 0xC6, 0x0F,
+        5, 0, 0x2a, 0x00, 0x00, 0x00, 0xf0, // CASET: column addresses from 0 to 240 (f0)
+        5, 0, 0x2b, 0x00, 0x00, 0x00, 0xf0, // RASET: row addresses from 0 to 240 (f0)
+        1, 2, 0x21,
+        1, 2, 0x13,
+        1, 10, 0x11,
+        1, 2, 0x29,
+        0
+};
+#endif
 
 static inline uint32_t st7789_encode_cmd(uint8_t cmd, uint32_t data_count)
 {
@@ -50,22 +75,25 @@ static inline uint32_t st7789_encode_cmd(uint8_t cmd, uint32_t data_count)
   return instr;
 }
 
-static inline void lcd_write_cmd(PIO pio, uint sm, const uint8_t *cmd, size_t count) {
+static inline void lcd_write_cmd(PIO pio, uint sm, const uint8_t *cmd, int count) {
   st7789_lcd_wait_idle(pio, sm);
 
-  uint32_t instr = st7789_encode_cmd(cmd[0], count - 1);
+  uint32_t instr = st7789_encode_cmd(*cmd++, count - 1);
   pio_sm_put(pio, sm, instr);
 
   if (count >= 2) {
-    assert(count <= 5);
-
-    instr = 0;
-    for (int i = 1; i < count; ++i) {
-      instr <<= 8;
-      instr |= cmd[i];
+    count--;
+    while (count > 0) {
+      instr = 0;
+      for (int i = 0; i < count && i < 4; ++i) {
+        instr <<= 8;
+        instr |= cmd[i];
+      }
+      if (count < 4)
+        instr <<= 8 * (4 - count);
+      pio_sm_put(pio, sm, instr);
+      count -= 4;
     }
-    instr <<= 8 * (5 - count);
-    pio_sm_put(pio, sm, instr);
   }
 }
 

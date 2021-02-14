@@ -211,6 +211,13 @@ int main()
   sd_init_4pins();
   sd_set_clock_divider(5);
 
+  // Force the pico power supply into continuous mode
+  // This helps reduce flickering when everything goes idle for 20ms
+  // between frames.
+  gpio_init(23);
+  gpio_set_dir(23, true);
+  gpio_put(23, true);
+
   st = st7789_init(pio0, 0);
 
   // Clear screen
