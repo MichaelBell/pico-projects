@@ -8,6 +8,12 @@
 // using no more than 22K of RAM (if sent directly to an LCD display)
 //
 // Copyright 2020 BitBank Software, Inc. All Rights Reserved.
+//
+// This version modified by Mike Bell to reduce memory copying
+// Modifications Copyright 2021 Michael Bell.
+// Original version can be found at:
+// https://github.com/bitbank2/AnimatedGIF 
+//
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -18,6 +24,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 //===========================================================================
+#include <assert.h>
+
 #include "AnimatedGIF.h"
 
 #ifdef HAL_ESP32_HAL_H_
@@ -450,7 +458,7 @@ static int GIFParseInfo(GIFIMAGE *pPage, int bInfoOnly)
     pPage->iBpp = cGIFBits[pPage->ucCodeStart];
     // we are re-using the same buffer turning GIF file data
     // into "pure" LZW
-   pPage->iLZWSize = 0; // we're starting with no LZW data yet
+   pPage->iLZWWriteOff = 0; // we're starting with no LZW data yet
    c = 1; // get chunk length
    while (c && iOffset < iBytesRead)
    {
@@ -459,18 +467,20 @@ static int GIFParseInfo(GIFIMAGE *pPage, int bInfoOnly)
 //     Serial.printf("Chunk size = %d\n", c);
      if (c <= (iBytesRead - iOffset))
      {
-       memcpy(&pPage->ucLZW[pPage->iLZWSize], &p[iOffset], c);
-       pPage->iLZWSize += c;
+       memcpy(&pPage->ucLZW[pPage->iLZWWriteOff], &p[iOffset], c);
+       pPage->iLZWWriteOff += c;
        iOffset += c;
+       assert(pPage->iLZWWriteOff < LZW_BUF_SIZE);
      }
      else // partial chunk in our buffer
      {
        int iPartialLen = (iBytesRead - iOffset);
-       memcpy(&pPage->ucLZW[pPage->iLZWSize], &p[iOffset], iPartialLen);
-       pPage->iLZWSize += iPartialLen;
+       memcpy(&pPage->ucLZW[pPage->iLZWWriteOff], &p[iOffset], iPartialLen);
+       pPage->iLZWWriteOff += iPartialLen;
        iOffset += iPartialLen;
-       (*pPage->pfnRead)(&pPage->GIFFile, &pPage->ucLZW[pPage->iLZWSize], c - iPartialLen);
-       pPage->iLZWSize += (c - iPartialLen);
+       (*pPage->pfnRead)(&pPage->GIFFile, &pPage->ucLZW[pPage->iLZWWriteOff], c - iPartialLen);
+       pPage->iLZWWriteOff += (c - iPartialLen);
+       assert(pPage->iLZWWriteOff < LZW_BUF_SIZE);
      }
      if (c == 0)
         pPage->bEndOfFrame = 1; // signal not to read beyond the end of the frame
@@ -637,26 +647,27 @@ gifpagesz:
 //
 static int GIFGetMoreData(GIFIMAGE *pPage)
 {
-    int iDelta = (pPage->iLZWSize - pPage->iLZWOff);
+    int iDelta = (pPage->iLZWWriteOff - pPage->iLZWReadOff) & LZW_BUF_MASK;
+
     unsigned char c = 1;
-    // move any existing data down
     if (pPage->bEndOfFrame ||  iDelta >= (LZW_BUF_SIZE - MAX_CHUNK_SIZE) || iDelta <= 0)
-        return 1; // frame is finished or buffer is already full; no need to read more data
-    if (pPage->iLZWOff != 0)
-    {
-// NB: memcpy() fails on some systems because the src and dest ptrs overlap
-// so copy the bytes in a simple loop to avoid problems
-      for (int i=0; i<pPage->iLZWSize - pPage->iLZWOff; i++) {
-         pPage->ucLZW[i] = pPage->ucLZW[i + pPage->iLZWOff];
-      }
-      pPage->iLZWSize -= pPage->iLZWOff;
-      pPage->iLZWOff = 0;
-    }
-    while (c && pPage->GIFFile.iPos < pPage->GIFFile.iSize && pPage->iLZWSize < (LZW_BUF_SIZE-MAX_CHUNK_SIZE))
+        return 1; // frame is finished or buffer is full; no need to read more data
+
+    while (c && pPage->GIFFile.iPos < pPage->GIFFile.iSize && iDelta < (LZW_BUF_SIZE - MAX_CHUNK_SIZE))
     {
         (*pPage->pfnRead)(&pPage->GIFFile, &c, 1); // current length
-        (*pPage->pfnRead)(&pPage->GIFFile, &pPage->ucLZW[pPage->iLZWSize], c);
-        pPage->iLZWSize += c;
+        if (pPage->iLZWWriteOff + c > LZW_BUF_SIZE)
+        {
+            (*pPage->pfnRead)(&pPage->GIFFile, &pPage->ucLZW[pPage->iLZWWriteOff], LZW_BUF_SIZE - pPage->iLZWWriteOff);
+            pPage->iLZWWriteOff = c - (LZW_BUF_SIZE - pPage->iLZWWriteOff);
+            (*pPage->pfnRead)(&pPage->GIFFile, &pPage->ucLZW[0], pPage->iLZWWriteOff);
+        }
+        else
+        {
+            (*pPage->pfnRead)(&pPage->GIFFile, &pPage->ucLZW[pPage->iLZWWriteOff], c);
+            pPage->iLZWWriteOff = (pPage->iLZWWriteOff + c) & LZW_BUF_MASK;
+        }
+        iDelta = (pPage->iLZWWriteOff - pPage->iLZWReadOff) & LZW_BUF_MASK;
     }
     if (c == 0) // end of frame
         pPage->bEndOfFrame = 1;
@@ -833,8 +844,17 @@ static void GIFMakePels(GIFIMAGE *pPage, unsigned int code)
 //
 // Macro to extract a variable length code
 //
-#define GET_CODE if (bitnum > (REGISTER_WIDTH - codesize)) { pImage->iLZWOff += (bitnum >> 3); \
-            bitnum &= 7; ulBits = INTELLONG(&p[pImage->iLZWOff]); } \
+#define READ_LZW_32 \
+        ulBits = p[pImage->iLZWReadOff]; \
+        ulBits |= p[(pImage->iLZWReadOff + 1) & LZW_BUF_MASK] << 8; \
+        ulBits |= p[(pImage->iLZWReadOff + 2) & LZW_BUF_MASK] << 16; \
+        ulBits |= p[(pImage->iLZWReadOff + 3) & LZW_BUF_MASK] << 24; 
+#define GET_CODE \
+        if (bitnum > (REGISTER_WIDTH - codesize)) { \
+            pImage->iLZWReadOff = (pImage->iLZWReadOff + (bitnum >> 3)) & LZW_BUF_MASK; \
+            READ_LZW_32 \
+            bitnum &= 7; \
+        } \
         code = (unsigned short) (ulBits >> bitnum); /* Read a 32-bit chunk */ \
         code &= sMask; bitnum += codesize;
 
@@ -866,7 +886,7 @@ static int DecodeLZW(GIFIMAGE *pImage, int iOptions)
     pImage->iYCount = pImage->iHeight; // count down the lines
     pImage->iXCount = pImage->iWidth;
     bitnum = 0;
-    pImage->iLZWOff = 0; // Offset into compressed data
+    pImage->iLZWReadOff = 0; // Offset into compressed data
     GIFGetMoreData(pImage); // Read some data to start
 
     // Initialize code table
@@ -884,7 +904,7 @@ init_codetable:
     nextlim = (unsigned short) ((1 << codesize));
     // This part of the table needs to be reset multiple times
     memset(&giftabs[cc], LINK_UNUSED, (4096 - cc)*sizeof(short));
-    ulBits = INTELLONG(&p[pImage->iLZWOff]); // start by reading 4 bytes of LZW data
+    READ_LZW_32  // start by reading 4 bytes of LZW data
     GET_CODE
     if (code == cc) // we just reset the dictionary, so get another code
     {

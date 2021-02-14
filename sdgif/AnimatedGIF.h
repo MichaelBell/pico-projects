@@ -33,9 +33,9 @@
 //
 
 /* GIF Defines and variables */
-#define MAX_CHUNK_SIZE 255
-#define LZW_BUF_SIZE (12*MAX_CHUNK_SIZE)
-#define LZW_HIGHWATER (10*MAX_CHUNK_SIZE)
+#define MAX_CHUNK_SIZE 256
+#define LZW_BUF_SIZE (8*MAX_CHUNK_SIZE)
+#define LZW_BUF_MASK ((1 << 11) - 1)
 #define MAX_WIDTH 320
 #define FILE_BUF_SIZE 8192
 
@@ -126,8 +126,8 @@ typedef struct gif_image_tag
     int iError; // last error
     int iFrameDelay; // delay in milliseconds for this frame
     int iXCount, iYCount; // decoding position in image (countdown values)
-    int iLZWOff; // current LZW data offset
-    int iLZWSize; // current quantity of data in the LZW buffer
+    int iLZWReadOff; // current LZW data read offset
+    int iLZWWriteOff; // current LZW data write offset
     int iCommentPos; // file offset of start of comment data
     short sCommentLen; // length of comment
     GIF_READ_CALLBACK *pfnRead;
