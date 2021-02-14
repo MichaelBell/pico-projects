@@ -105,9 +105,9 @@ void sdgif_draw(GIFDRAW* pDraw)
   st7789_dma_buffer(&st, frame.st_data[st.chan_idx], stPtr - frame.st_data[st.chan_idx]);
 }
 
-#define SD_SECTOR_START 65536
+#define SD_SECTOR_START 81920
 #define SD_BUFFER_SECTORS 6
-#define FILE_LEN 4892075
+#define FILE_LEN 5702746
 
 typedef struct {
   uint32_t buffer[128 * SD_BUFFER_SECTORS];
@@ -249,14 +249,16 @@ int main()
       int delay = 10;
       absolute_time_t start_time = get_absolute_time();
       while (GIF_playFrame(&gif, &delay)) {
-        uint32_t frame_time = absolute_time_diff_us(start_time, get_absolute_time()) / 1000;
-        delay -= frame_time;
-        printf("Frame time %dms \tRead stall: %dus \tSeek stall %dus\n", frame_time, read_stall_time, seek_stall_time);
+        uint32_t frame_time = absolute_time_diff_us(start_time, get_absolute_time());
+
+        printf("Frame time %dus \tRead stall: %dus \tSeek stall %dus\n", frame_time, read_stall_time, seek_stall_time);
         read_stall_time = 0;
         seek_stall_time = 0;
 
+        delay *= 1000;
+        delay -= absolute_time_diff_us(start_time, get_absolute_time());
         if (delay > 0)
-          sleep_ms(delay);
+          sleep_us(delay);
 
         start_time = get_absolute_time();
       }
