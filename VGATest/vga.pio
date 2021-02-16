@@ -1,0 +1,85 @@
+; One channel of 5 bit pixel colour output
+;
+; Idea is to run 3 of these channels simultaneously for RGB
+;
+; Encoding is packed into 32-bit words:
+; 2 bits: Type:
+;   00: End of line
+;   01: 3 RLE encoded blocks, 5 bits pixel, 5 run length - 2 (min length is 2).
+;   11: 6 raw 5-bit pixels
+; 30 bits data
+; 1 pixel written per 2 clocks.
+
+.program vga_channel
+.origin 0
+  jmp end      ; PC = 0 -> End of line
+
+  out pins, 5  ; PC = 1 -> RLE   ; Pixel 1A
+  jmp rle
+
+  out pins, 5  ; PC = 3 -> Raw   ; Pixel 1
+  set y, 3
+raw_loop:
+  out pins, 5              ; Pixel 2,3,4,5
+  jmp y--, raw_loop
+  out pins, 5              ; Pixel 6
+  out pc, 2
+
+rle:
+  out x, 5                 ; Pixel 2A
+rleAL:
+  jmp x--, rleAL2
+
+rleB:
+  out pins, 5              ; Pixel 1B
+  out x, 5
+rleBL:
+  jmp x--, rleBL [1]       ; Pixel B
+
+rleC:
+  out pins, 5              ; Pixel 1C
+  out x, 5
+rleCL2:
+  jmp x--, rleCL           ; Pixel C
+  out pc, 2
+
+rleAL2:
+  jmp rleAL                ; Pixel A
+
+rleCL:
+  jmp rleCL2
+
+end:
+  mov pins, null
+  wait 1 irq 4
+  out pc, 2
+
+.program vga_trigger
+  pull
+  irq 4
+
+% c-sdk {
+
+static inline void vga_channel_program_init(PIO pio, uint sm, uint base_pin) {
+  for (int i = 0; i < 5; ++i) {
+    pio_gpio_init(pio, base_pin + i);
+  }
+  pio_sm_set_consecutive_pindirs(pio, sm, base_pin, 5, true);
+
+  pio_sm_config c = vga_channel_program_get_default_config(0);
+  sm_config_set_out_pins(&c, base_pin, 5);
+  sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_TX);
+  sm_config_set_clkdiv(&c, 1.0f);
+  sm_config_set_out_shift(&c, false, true, 32);
+  pio_sm_init(pio, sm, 0, &c);
+  pio_sm_set_enabled(pio, sm, true);
+}
+
+static inline void vga_trigger_program_init(PIO pio, uint sm, uint offset) {
+  pio_sm_config c = vga_trigger_program_get_default_config(offset);
+  sm_config_set_out_shift(&c, false, false, 32);
+  pio_sm_init(pio, sm, offset, &c);
+  pio_sm_set_enabled(pio, sm, true);  
+}
+
+%}
