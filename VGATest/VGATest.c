@@ -27,9 +27,9 @@ int main()
     assert(offset == 0);
     vga_channel_program_init(pio0, vga_channel_sm, 0);
     offset = pio_add_program(pio0, &vga_trigger_program);
-    vga_trigger_program_init(pio0, vga_trigger_sm, offset);
+    vga_trigger_program_init(pio0, vga_trigger_sm, offset, 5);
 
-    logic_analyser_init(pio0, analyser_sm, 0, 8, 2.f);
+    logic_analyser_init(pio0, analyser_sm, 0, CAPTURE_PIN_COUNT, 2.f);
     
     //                                 | |    |    |    |    |    |    |
     pio_sm_put(pio0, vga_channel_sm, 0b11000010000000000000000000000000u);
@@ -46,7 +46,7 @@ int main()
             (CAPTURE_PIN_COUNT * CAPTURE_N_SAMPLES + 31) / 32,
             CAPTURE_PIN_BASE, true);
 
-    pio_sm_put(pio0, vga_trigger_sm, 0);
+    pio_sm_put(pio0, vga_trigger_sm, 0xC0000001u);
 
     dma_channel_wait_for_finish_blocking(0);
     print_capture_buf(capture_buf, CAPTURE_PIN_BASE, CAPTURE_PIN_COUNT, CAPTURE_N_SAMPLES);

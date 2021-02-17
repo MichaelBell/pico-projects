@@ -54,9 +54,21 @@ end:
   wait 1 irq 4
   out pc, 2
 
+; Set two sync pins based and then wait base don input word:
+; 31: VSync
+; 30: HSync
+; 29-1: Delay duration in pixel clocks, total loop duration is 
+;         delay + 3 if trigger or delay + 2 if no trigger.
+; 0:  Whether to trigger data output after the delay.
 .program vga_trigger
-  pull
-  irq 4
+trigger_top:
+  out pins, 2      ; Set VS & HS
+  out x, 29        ; Loop count
+sync_loop:
+  jmp x--, sync_loop [1]
+  out x, 1
+  jmp !x trigger_top
+  irq 4 [1]
 
 % c-sdk {
 
@@ -75,9 +87,16 @@ static inline void vga_channel_program_init(PIO pio, uint sm, uint base_pin) {
   pio_sm_set_enabled(pio, sm, true);
 }
 
-static inline void vga_trigger_program_init(PIO pio, uint sm, uint offset) {
+static inline void vga_trigger_program_init(PIO pio, uint sm, uint offset, uint sync_base_pin) {
+  pio_gpio_init(pio, sync_base_pin);
+  pio_gpio_init(pio, sync_base_pin + 1);
+  pio_sm_set_consecutive_pindirs(pio, sm, sync_base_pin, 2, true);
+
   pio_sm_config c = vga_trigger_program_get_default_config(offset);
-  sm_config_set_out_shift(&c, false, false, 32);
+  sm_config_set_out_pins(&c, sync_base_pin, 2);
+  sm_config_set_out_shift(&c, false, true, 32);
+  sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_TX);
+  sm_config_set_clkdiv(&c, 1.0f);
   pio_sm_init(pio, sm, offset, &c);
   pio_sm_set_enabled(pio, sm, true);  
 }
