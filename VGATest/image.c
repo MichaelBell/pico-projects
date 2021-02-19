@@ -7,18 +7,24 @@
 #include "hardware/irq.h"
 
 #include "vga.h"
+#include "flash.h"
 
 //#include "feeding_duck320.h"
 #include "perseverance.h"
 
 static uint32_t* data_pos;
 
-#if 0
+#if 1
 #define DISPLAY_COLS 640
 #define DISPLAY_ROWS 480
 #else
+#if 0
 #define DISPLAY_COLS 1280
 #define DISPLAY_ROWS 720
+#else
+#define DISPLAY_COLS 1920
+#define DISPLAY_ROWS 1080
+#endif
 #endif
 
 #define MAX_CMD_LINE_LEN (((DISPLAY_COLS + 5) / 6) + 1)
@@ -48,6 +54,8 @@ static uint32_t zero = 0;
 #define BLACK99 0b01000001111100000111110000011111  // 99 pixels of black
 #define BLACK61 0b01000001111100000110000000000000  // 61 pixels of black
 
+#ifdef IMAGE_IN_RAM
+// This is the from RAM version
 static void setup_next_line_ptr_and_len()
 {
   if (display_row >= 120 && data_pos < image_dat + image_dat_len) {
@@ -90,6 +98,54 @@ static void setup_next_line_ptr_and_len()
     }
   }
 }
+#else
+// This streams from flash
+static void __time_critical_func(setup_next_line_ptr_and_len)()
+{
+  if (display_row >= 120 && data_pos < image_dat + image_dat_len) {
+    bufnum ^= 1;
+
+    // Extract lengths (1 word)
+    uint32_t* lens;
+    while (!flash_get_data(1, &lens));
+
+    if (*lens & GRAYSCALE_BIT) {
+      red_chan.len = *lens & 0x3ff;
+      red_chan.ptr = red_chan.buffer[bufnum];
+
+      flash_copy_data_blocking(red_chan.ptr + 2, red_chan.len);
+
+      red_chan.ptr[red_chan.len + 2] = 0;
+      red_chan.len += 3;
+
+      green_chan.ptr = blue_chan.ptr = red_chan.ptr;
+      green_chan.len = blue_chan.len = red_chan.len;
+    }
+    else
+    {
+      red_chan.len = (*lens & 0x3ff);
+      green_chan.len = ((*lens >> 10) & 0x3ff);
+      blue_chan.len = (*lens >> 20);
+      for (int i = 0; i < 3; ++i)
+      {
+        channel[i].ptr = channel[i].buffer[bufnum];
+        flash_copy_data_blocking(channel[i].ptr + 2, channel[i].len);
+        channel[i].ptr[channel[i].len + 2] = 0;
+        channel[i].len += 3;
+      }
+    }
+    assert(data_pos <= image_dat + image_dat_len);
+  }
+  else
+  {
+    for (int i = 0; i < 3; ++i)
+    {
+      channel[i].len = 1;
+      channel[i].ptr = &zero;
+    }
+  }
+}
+#endif
 
 #define vga_red_dma   5
 #define vga_green_dma 6
@@ -97,7 +153,7 @@ static void setup_next_line_ptr_and_len()
 #define vga_dma_channel_mask (0b111 << 5)
 static uint32_t complete_dma_channel_bits = 0;
 
-static void transfer_next_line()
+static void __time_critical_func(transfer_next_line)()
 {
   dma_channel_transfer_from_buffer_now(vga_red_dma, red_chan.ptr, red_chan.len);
   dma_channel_transfer_from_buffer_now(vga_green_dma, green_chan.ptr, green_chan.len);
@@ -106,10 +162,10 @@ static void transfer_next_line()
     setup_next_line_ptr_and_len();
 }
 
-void dma_complete_handler() 
+void __time_critical_func(dma_complete_handler)() 
 {
   uint32_t ints = dma_hw->ints0 & vga_dma_channel_mask;
-  dma_hw->ints0 |= ints;
+  dma_hw->ints0 = ints;
   complete_dma_channel_bits |= ints;
 
   if (complete_dma_channel_bits == vga_dma_channel_mask)
@@ -175,6 +231,10 @@ void display_loop()
 {
   setup_dma_channels();
 
+#ifndef IMAGE_IN_RAM
+  flash_set_stream(image_dat, image_dat_len);
+#endif
+
   for (int i = 0; i < 3; ++i) {
     for (int j = 0; j < 2; ++j) {
       channel[i].buffer[j][0] = BLACK99;
@@ -193,9 +253,11 @@ void display_loop()
         {
           data_pos = image_dat;
           display_row = 0;
+          flash_reset_stream();
           setup_next_line_ptr_and_len();
           
           irq_set_enabled(DMA_IRQ_0, false);
+          dma_hw->ints0 |= vga_dma_channel_mask;
           transfer_next_line();
           irq_set_enabled(DMA_IRQ_0, true);
 
@@ -217,7 +279,9 @@ void __no_inline_not_in_flash_func(display_start_new_frame)()
 
 void __no_inline_not_in_flash_func(display_end_frame)() 
 {
+  irq_set_enabled(DMA_IRQ_0, false);
   dma_channel_abort(vga_red_dma);
   dma_channel_abort(vga_green_dma);
   dma_channel_abort(vga_blue_dma);
+  dma_hw->ints0 = vga_dma_channel_mask;
 }

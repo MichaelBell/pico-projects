@@ -4,7 +4,7 @@
 ;
 ; Encoding is packed into 32-bit words:
 ; 2 bits: Type:
-;   00: End of line
+;   00: End of line, data must be zero.
 ;   01: 3 RLE encoded blocks, 5 bits pixel, 5 run length - 2 (min length is 2).
 ;   11: 6 raw 5-bit pixels
 ; 30 bits data
@@ -51,8 +51,9 @@ rleCL:
 
 PUBLIC end:
   mov pins, null
-  out null, 32
+  out x, 32
   wait 1 irq 4
+  pull noblock
   out pc, 2
 
 ; Set two sync pins based and then wait base don input word:

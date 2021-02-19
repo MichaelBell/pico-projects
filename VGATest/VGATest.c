@@ -9,6 +9,8 @@
 #include "vga.h"
 #include "vga.pio.h"
 
+#include "flash.h"
+
 const uint CAPTURE_PIN_BASE = 0;
 const uint CAPTURE_PIN_COUNT = 32;
 const uint CAPTURE_N_SAMPLES = 200;
@@ -20,7 +22,7 @@ void print_capture_buf(const uint32_t *buf, uint pin_base, uint pin_count, uint3
 
 const uint analyser_sm = 3;
 
-#if 0
+#if 1
  // Timings for 640x480
 #define TIMING_V_PULSE    2
 #define TIMING_V_BACK    (30 + TIMING_V_PULSE)
@@ -35,6 +37,7 @@ const uint analyser_sm = 3;
 #define CLOCK_PD2   5
 #define CLOCK_RATE  (50 * MHZ)
 #else
+#if 0
  // Timings for 720p
 #define TIMING_V_PULSE    5
 #define TIMING_V_BACK    (20 + TIMING_V_PULSE)
@@ -48,48 +51,78 @@ const uint analyser_sm = 3;
 #define CLOCK_PD1   7
 #define CLOCK_PD2   1
 #define CLOCK_RATE  149142857
+#else
+ // Timings for 1080p
+#define TIMING_V_PULSE    8
+#define TIMING_V_BACK    (6 + TIMING_V_PULSE)
+#define TIMING_V_DISPLAY (1080 + TIMING_V_BACK)
+#define TIMING_V_FRONT   (17 + TIMING_V_DISPLAY)
+#define TIMING_H_FRONT   8
+#define TIMING_H_PULSE   32
+#define TIMING_H_BACK    40
+#define TIMING_H_DISPLAY 1920
+#define CLOCK_VCO   1332
+#define CLOCK_PD1   5
+#define CLOCK_PD2   1
+#define CLOCK_RATE  266400 * KHZ
+#endif
 #endif
 
 uint16_t timing_row = 0;
+uint16_t timing_phase = 0;
 
 void __no_inline_not_in_flash_func(drive_timing)()
 {
-    // TODO: If we have other interrupt load on this core then only
-    //       queueing one line ahead could get dicey.  Would be better
-    //       to just fill the channel as it empties.
+    while (!pio_sm_is_tx_fifo_full(vga_pio, vga_timing_sm)) {
+        uint32_t instr;
+        switch (timing_phase) {
+            case 0:
+                // Front Porch
+                instr = 0x4000A042u;
+                if (timing_row >= TIMING_V_PULSE) instr |= 0x80000000u;
+                instr |= (TIMING_H_FRONT - 3) << 16;
+                pio_sm_put(vga_pio, vga_timing_sm, instr);
+                break;
 
-    // Front Porch
-    uint32_t instr = 0x4000A042u;
-    if (timing_row >= TIMING_V_PULSE) instr |= 0x80000000u;
-    instr |= (TIMING_H_FRONT - 3) << 16;
-    pio_sm_put_blocking(vga_pio, vga_timing_sm, instr);
+            case 1:
+                // HSYNC
+                instr = 0x0000A042u;
+                if (timing_row >= TIMING_V_PULSE) instr |= 0x80000000u;
+                instr |= (TIMING_H_PULSE - 3) << 16;
+                pio_sm_put(vga_pio, vga_timing_sm, instr);
+                break;
 
-    // HSYNC
-    instr = 0x0000A042u;
-    if (timing_row >= TIMING_V_PULSE) instr |= 0x80000000u;
-    instr |= (TIMING_H_PULSE - 3) << 16;
-    pio_sm_put_blocking(vga_pio, vga_timing_sm, instr);
+            case 2:
+                // Back Porch, trigger pixel channels if in display window
+                instr = 0x4000C004u;
+                if (timing_row >= TIMING_V_PULSE) instr |= 0x80000000u;
+                if (timing_row >= TIMING_V_BACK && timing_row < TIMING_V_DISPLAY) instr |= 0xC004u;
+                else instr |= 0xA042u;
+                instr |= (TIMING_H_BACK - 3) << 16;
+                pio_sm_put(vga_pio, vga_timing_sm, instr);
+                break;
 
-    // Back Porch, trigger pixel channels if in display window
-    instr = 0x4000C004u;
-    if (timing_row >= TIMING_V_PULSE) instr |= 0x80000000u;
-    if (timing_row >= TIMING_V_BACK && timing_row < TIMING_V_DISPLAY) instr |= 0xC004u;
-    else instr |= 0xA042u;
-    instr |= (TIMING_H_BACK - 3) << 16;
-    pio_sm_put_blocking(vga_pio, vga_timing_sm, instr);
+            case 3:
+                // Display, trigger next line at end
+                instr = 0x4000C001u;
+                if (timing_row >= TIMING_V_PULSE) instr |= 0x80000000u;
+                instr |= (TIMING_H_DISPLAY - 3) << 16;
+                pio_sm_put_blocking(vga_pio, vga_timing_sm, instr);
 
-    // Display, trigger next line at end
-    instr = 0x4000C001u;
-    if (timing_row >= TIMING_V_PULSE) instr |= 0x80000000u;
-    instr |= (TIMING_H_DISPLAY - 3) << 16;
-    pio_sm_put_blocking(vga_pio, vga_timing_sm, instr);
+                if (++timing_row >= TIMING_V_FRONT) timing_row = 0;
+                break;
+        }
 
-    if (++timing_row >= TIMING_V_FRONT) timing_row = 0;
+        timing_phase = (timing_phase + 1) & 3;
+    }
+}
+
+void __no_inline_not_in_flash_func(timing_isr)() {
+    drive_timing();
 }
 
 void __no_inline_not_in_flash_func(end_of_line_isr)() {
     hw_clear_bits(&vga_pio->irq, 0x2);
-    drive_timing();
 
     if (timing_row == 0)
     {
@@ -120,6 +153,8 @@ void __no_inline_not_in_flash_func(end_of_line_isr)() {
 
 // Setup must happen on core 1, to ensure interrupts are serviced fast enough.
 void vga_entry() {
+    flash_init();
+
     uint offset = pio_add_program(vga_pio, &vga_channel_program);
     assert(offset == 0);
     vga_channel_program_init(vga_pio, vga_red_sm, 0);
@@ -132,9 +167,13 @@ void vga_entry() {
     irq_set_exclusive_handler(PIO0_IRQ_0, end_of_line_isr);
     irq_set_enabled(PIO0_IRQ_0, true);
 
-    // Prime the timing SM
-    drive_timing();
-    drive_timing();
+    hw_set_bits(&vga_pio->inte1, 0x080);
+    irq_set_exclusive_handler(PIO0_IRQ_1, timing_isr);
+    irq_set_priority(PIO0_IRQ_1, 0xC0);
+    irq_set_enabled(PIO0_IRQ_1, true);
+
+    // Notify setup is complete
+    multicore_fifo_push_blocking(0);
 
     while (1) {
         __wfi();
@@ -157,6 +196,8 @@ int main()
 
     multicore_launch_core1(vga_entry);
 
+    // Wait for setup complete then call into display code
+    multicore_fifo_pop_blocking();
     display_loop();
 
     return 0;
