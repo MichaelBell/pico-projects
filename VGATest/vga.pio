@@ -49,7 +49,7 @@ rleAL2:
 rleCL:
   jmp rleCL2
 
-end:
+PUBLIC end:
   mov pins, null
   out null, 32
   wait 1 irq 4

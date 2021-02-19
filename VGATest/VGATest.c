@@ -84,23 +84,24 @@ void __no_inline_not_in_flash_func(end_of_line_isr)() {
     }
     if (timing_row == TIMING_V_DISPLAY + 3)
     {
-        // Not going to display any more data, so might as well kill
-        // any transfers that haen't finished.
-        dma_channel_abort(vga_red_dma);
-        dma_channel_abort(vga_green_dma);
-        dma_channel_abort(vga_blue_dma);
+        display_end_frame();
     }
     else if (timing_row == TIMING_V_DISPLAY + 4)
     {
-        // TODO: Force SMs to get back into a good state:
+        // Force SMs to get back into a good state:
         //       Disable
         //       Reset PC
-        //       Force exec out null 32
+        //       Clear OSR (it is read when SM is re-enabled)
         //       Drain FIFOs
         //       Re-enable
-        pio_sm_drain_tx_fifo(vga_pio, vga_red_sm);
-        pio_sm_drain_tx_fifo(vga_pio, vga_green_sm);
-        pio_sm_drain_tx_fifo(vga_pio, vga_blue_sm);
+        for (uint sm = vga_red_sm; sm <= vga_blue_sm; ++sm)
+        {
+            pio_sm_set_enabled(vga_pio, sm, false);
+            pio_sm_exec(vga_pio, sm, pio_encode_jmp(vga_channel_offset_end));
+            pio_sm_exec(vga_pio, sm, pio_encode_mov(pio_osr, pio_null));
+            pio_sm_drain_tx_fifo(vga_pio, sm);
+            pio_sm_set_enabled(vga_pio, sm, true);
+        }
     }
 }
 

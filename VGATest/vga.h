@@ -17,7 +17,11 @@ void display_loop();
 // throw to core0 if anything interesting has to happen
 
 // Call to user code to start transfers for next frame
-void __no_inline_not_in_flash_func(display_start_new_frame)();
+void display_start_new_frame();
 
 // Call to user to notify the next row to be displayed
-void __no_inline_not_in_flash_func(display_next_row)(uint16_t row);
+void display_next_row(uint16_t row);
+
+// Call to user to notify that the frame has ended, and any running
+// transfers should be aborted.
+void display_end_frame();
