@@ -32,8 +32,8 @@ const uint analyser_sm = 3;
 
 uint16_t timing_row = 0;
 
-#define NEED_DISPLAY() (timing_row >= (TIMING_V_BACK - 2) && timing_row < (TIMING_V_DISPLAY - 2))
-#define GET_NEXT_DISPLAY_ROW() (timing_row - (TIMING_V_BACK - 2))
+#define NEED_DISPLAY() (timing_row >= (TIMING_V_BACK - 2) && timing_row < (TIMING_V_DISPLAY - 2) - 1)
+#define GET_NEXT_DISPLAY_ROW() (timing_row - (TIMING_V_BACK - 2) + 1)
 
 void __no_inline_not_in_flash_func(drive_timing)()
 {
@@ -188,7 +188,7 @@ int main()
                     50 * MHZ,
                     50 * MHZ);
 
-    stdio_init_all();
+    //stdio_init_all();
 
     multicore_launch_core1(vga_entry);
 

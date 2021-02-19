@@ -21,7 +21,7 @@ pico_set_program_name(VGATest "VGATest")
 pico_set_program_version(VGATest "0.1")
 
 pico_enable_stdio_uart(VGATest 0)
-pico_enable_stdio_usb(VGATest 1)
+pico_enable_stdio_usb(VGATest 0)
 
 pico_generate_pio_header(VGATest ${CMAKE_CURRENT_LIST_DIR}/vga.pio)
 
