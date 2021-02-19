@@ -14,6 +14,8 @@
 
 static uint32_t* data_pos;
 
+#define IMAGE_ROWS 240
+
 #if 1
 #define DISPLAY_COLS 640
 #define DISPLAY_ROWS 480
@@ -43,6 +45,7 @@ channel_t channel[3];
 
 static uint16_t bufnum = 0;
 static uint16_t display_row = 0;
+static uint16_t image_row = 0;
 
 static uint32_t zero = 0;
 
@@ -102,8 +105,10 @@ static void setup_next_line_ptr_and_len()
 // This streams from flash
 static void __time_critical_func(setup_next_line_ptr_and_len)()
 {
-  if (display_row >= 120 && data_pos < image_dat + image_dat_len) {
+  if (display_row >= 60 && image_row < IMAGE_ROWS)
+  {
     bufnum ^= 1;
+    ++image_row;
 
     // Extract lengths (1 word)
     uint32_t* lens;
@@ -227,7 +232,7 @@ static void setup_dma_channels()
     dma_hw->inte0 = vga_dma_channel_mask;
 }
 
-void display_loop() 
+void __time_critical_func(display_loop)() 
 {
   setup_dma_channels();
 
@@ -253,6 +258,7 @@ void display_loop()
         {
           data_pos = image_dat;
           display_row = 0;
+          image_row = 0;
           flash_reset_stream();
           setup_next_line_ptr_and_len();
           

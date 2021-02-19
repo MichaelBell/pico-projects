@@ -7,7 +7,7 @@
 #include "hardware/structs/xip_ctrl.h"
 #include "hardware/irq.h"
 
-#define FLASH_BUF_LEN_WORDS (128 * 8)
+#define FLASH_BUF_LEN_WORDS (128 * 16)
 #define FLASH_BUF_IDX_MASK  (FLASH_BUF_LEN_WORDS - 1)
 static uint32_t flash_buffer[FLASH_BUF_LEN_WORDS];
 
@@ -62,7 +62,7 @@ static void __no_inline_not_in_flash_func(flash_transfer)()
   if (next_write_addr < flash_prev_buffer_ptr)
   {
     uint32_t words_to_read = flash_prev_buffer_ptr - next_write_addr;
-    if (words_to_read > FLASH_BUF_LEN_WORDS / 8)
+    if (words_to_read > 0)
     {
       xip_ctrl_hw->stream_ctr = words_to_read;
       dma_channel_transfer_to_buffer_now(flash_dma_chan, next_write_addr, words_to_read);
@@ -88,7 +88,7 @@ void __no_inline_not_in_flash_func(flash_transfer_isr)()
   }
 }
 
-void flash_reset_stream()
+void __time_critical_func(flash_reset_stream)()
 {
   // Stop any running transfers
   if (dma_channel_is_busy(flash_dma_chan)) {
@@ -155,7 +155,7 @@ void flash_init()
 // Request data from flash.  Returns amount of data that was
 // available - may be less than amount requested, and sets ptr_out 
 // to point to it.  The data returned will be discarded on next read.
-uint32_t __not_in_flash_func(flash_get_data)(uint32_t len_req, uint32_t** ptr_out)
+uint32_t __no_inline_not_in_flash_func(flash_get_data)(uint32_t len_req, uint32_t** ptr_out)
 {
   assert(len_req <= FLASH_BUF_LEN_WORDS / 2);
   assert(len_req > 0);
@@ -194,12 +194,14 @@ uint32_t __not_in_flash_func(flash_get_data)(uint32_t len_req, uint32_t** ptr_ou
 
 void __not_in_flash_func(flash_copy_data_blocking)(uint32_t* dst_ptr, uint32_t len_in_words)
 {
+  if (len_in_words > 108) __breakpoint();
+
   uint32_t words_to_read = len_in_words;
   uint32_t* write_ptr = dst_ptr;
   while (words_to_read > 0) {
     uint32_t* data_ptr;
     uint32_t len_req = MIN(words_to_read, FLASH_BUF_LEN_WORDS / 4);
-    uint32_t words_read = flash_get_data(words_to_read, &data_ptr);
+    uint32_t words_read = flash_get_data(len_req, &data_ptr);
     memcpy(write_ptr, data_ptr, words_read * sizeof(uint32_t));
     write_ptr += words_read;
     words_to_read -= words_read;

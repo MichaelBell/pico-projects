@@ -68,8 +68,9 @@ const uint analyser_sm = 3;
 #endif
 #endif
 
-uint16_t timing_row = 0;
-uint16_t timing_phase = 0;
+static uint16_t timing_row = 0;
+static uint16_t timing_phase = 0;
+static uint16_t eol_row = 0;
 
 void __no_inline_not_in_flash_func(drive_timing)()
 {
@@ -104,7 +105,8 @@ void __no_inline_not_in_flash_func(drive_timing)()
 
             case 3:
                 // Display, trigger next line at end
-                instr = 0x4000C001u;
+                instr = 0x4000C000u;
+                if (timing_row == TIMING_V_FRONT - 1) instr = 0x4000C001u;
                 if (timing_row >= TIMING_V_PULSE) instr |= 0x80000000u;
                 instr |= (TIMING_H_DISPLAY - 3) << 16;
                 pio_sm_put_blocking(vga_pio, vga_timing_sm, instr);
@@ -122,17 +124,15 @@ void __no_inline_not_in_flash_func(timing_isr)() {
 }
 
 void __no_inline_not_in_flash_func(end_of_line_isr)() {
-    hw_clear_bits(&vga_pio->irq, 0x2);
+    if (vga_pio->irq & 2) eol_row = 0;
+    else eol_row++;
+    hw_clear_bits(&vga_pio->irq, 0x3);
 
-    if (timing_row == 0)
-    {
-        display_start_new_frame();
-    }
-    if (timing_row == TIMING_V_DISPLAY + 3)
+    if (eol_row == TIMING_V_DISPLAY)
     {
         display_end_frame();
     }
-    else if (timing_row == TIMING_V_DISPLAY + 4)
+    else if (eol_row == TIMING_V_DISPLAY + 1)
     {
         // Force SMs to get back into a good state:
         //       Disable
@@ -148,6 +148,10 @@ void __no_inline_not_in_flash_func(end_of_line_isr)() {
             pio_sm_drain_tx_fifo(vga_pio, sm);
             pio_sm_set_enabled(vga_pio, sm, true);
         }
+    }
+    else if (eol_row == TIMING_V_DISPLAY + 2)
+    {
+        display_start_new_frame();
     }
 }
 
