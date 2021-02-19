@@ -6,6 +6,7 @@
 #include "hardware/dma.h"
 #include "hardware/structs/xip_ctrl.h"
 #include "hardware/irq.h"
+#include "pico/sync.h"
 
 #define FLASH_BUF_LEN_WORDS (128 * 16)
 #define FLASH_BUF_IDX_MASK  (FLASH_BUF_LEN_WORDS - 1)
@@ -24,7 +25,8 @@ static volatile bool flash_stream_at_end;
 // Whether we are stopping streaming
 static volatile bool flash_stream_stop;
 
-static volatile bool flash_stream_starting;
+// Critical section to ensure we sync stream start correctly
+static critical_section_t flash_stream_cs;
 
 // Next address in flash to stream from
 #define flash_cur_stream_addr (uint32_t*)(xip_ctrl_hw->stream_addr | 0x10000000)
@@ -64,14 +66,12 @@ static void __no_inline_not_in_flash_func(flash_transfer)()
     uint32_t words_to_read = flash_prev_buffer_ptr - next_write_addr;
     if (words_to_read > 0)
     {
-      xip_ctrl_hw->stream_ctr = words_to_read;
       dma_channel_transfer_to_buffer_now(flash_dma_chan, next_write_addr, words_to_read);
     }
   }
   else
   {
     uint32_t words_to_read = FLASH_BUF_LEN_WORDS - next_write_idx;
-    xip_ctrl_hw->stream_ctr = words_to_read;
     dma_channel_transfer_to_buffer_now(flash_dma_chan, next_write_addr, words_to_read);
   }
 }
@@ -80,11 +80,15 @@ void __no_inline_not_in_flash_func(flash_transfer_isr)()
 {
   if (dma_hw->ints1 & (1u << flash_dma_chan))
   {
-    flash_stream_starting = true;
     dma_hw->ints1 = 1u << flash_dma_chan;
-    if (!flash_stream_stop && !dma_channel_is_busy(flash_dma_chan))
-      flash_transfer();
-    flash_stream_starting = false;
+
+    critical_section_enter_blocking(&flash_stream_cs);
+    if (!flash_stream_stop) {
+      if (!dma_channel_is_busy(flash_dma_chan)) {
+        flash_transfer();
+      }
+    }
+    critical_section_exit(&flash_stream_cs);
   }
 }
 
@@ -92,9 +96,11 @@ void __time_critical_func(flash_reset_stream)()
 {
   // Stop any running transfers
   if (dma_channel_is_busy(flash_dma_chan)) {
+    critical_section_enter_blocking(&flash_stream_cs);
     flash_stream_stop = true;
     xip_ctrl_hw->stream_ctr = 0;
     dma_channel_abort(flash_dma_chan);
+    critical_section_exit(&flash_stream_cs);
 
     // Required to ensure the next flash transfer runs correctly.
     (void)*(io_rw_32*)XIP_NOCACHE_NOALLOC_BASE;
@@ -109,14 +115,15 @@ void __time_critical_func(flash_reset_stream)()
 
   // Reset state tracking
   flash_stream_at_end = false;
-  flash_stream_starting = false;
 
   // Setup the first transfer
   xip_ctrl_hw->stream_addr = (uintptr_t)flash_source_data_ptr;
-  xip_ctrl_hw->stream_ctr = FLASH_BUF_LEN_WORDS;
+  xip_ctrl_hw->stream_ctr = flash_source_data_len;
 
+  critical_section_enter_blocking(&flash_stream_cs);
   flash_stream_stop = false;
   dma_channel_transfer_to_buffer_now(flash_dma_chan, flash_buffer, FLASH_BUF_LEN_WORDS);
+  critical_section_exit(&flash_stream_cs);
 }
 
 void flash_set_stream(uint32_t* data, uint32_t len)
@@ -130,6 +137,8 @@ void flash_set_stream(uint32_t* data, uint32_t len)
 
 void flash_init()
 {
+  critical_section_init(&flash_stream_cs);
+
   // Setup the DMA channel
   dma_channel_config c = dma_channel_get_default_config(flash_dma_chan);
   channel_config_set_transfer_data_size(&c, DMA_SIZE_32);
@@ -163,19 +172,27 @@ uint32_t __no_inline_not_in_flash_func(flash_get_data)(uint32_t len_req, uint32_
   // Can now write over previously returned buffer.
   uint32_t* write_ptr = (uint32_t*)dma_hw->ch[flash_dma_chan].write_addr;
   flash_prev_buffer_ptr = flash_buffer_ptr;
+
+  // Check whether we should now restart the transfer
   if (!dma_channel_is_busy(flash_dma_chan) && 
-      (dma_hw->ints1 & (1u << flash_dma_chan)) == 0 &&
-      !flash_stream_starting)
+      (dma_hw->ints1 & (1u << flash_dma_chan)) == 0)
   {
-    flash_transfer();
+    // We should probably restart the transfer.
+    // Protect the restart in a critical section.
+    // TODO: Work out a safe way of doing this without holding
+    //       the lock for so long.
+    critical_section_enter_blocking(&flash_stream_cs);
+    if (!dma_channel_is_busy(flash_dma_chan))
+      flash_transfer();
+    critical_section_exit(&flash_stream_cs);
   }
 
-  uint32_t words_available;
+  uint32_t words_available = 0;
   if (write_ptr < flash_buffer_ptr) {
     // Write pointer behind read pointer means we have wrapped.  Can read until end of buffer
     words_available = FLASH_BUF_LEN_WORDS - (flash_buffer_ptr - flash_buffer);
   }
-  else
+  else if (write_ptr > flash_buffer_ptr)
   {
     words_available = write_ptr - flash_buffer_ptr;
   }
@@ -194,8 +211,6 @@ uint32_t __no_inline_not_in_flash_func(flash_get_data)(uint32_t len_req, uint32_
 
 void __not_in_flash_func(flash_copy_data_blocking)(uint32_t* dst_ptr, uint32_t len_in_words)
 {
-  if (len_in_words > 108) __breakpoint();
-
   uint32_t words_to_read = len_in_words;
   uint32_t* write_ptr = dst_ptr;
   while (words_to_read > 0) {
