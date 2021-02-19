@@ -32,9 +32,6 @@ const uint analyser_sm = 3;
 
 uint16_t timing_row = 0;
 
-#define NEED_DISPLAY() (timing_row >= (TIMING_V_BACK - 2) && timing_row < (TIMING_V_DISPLAY - 2) - 1)
-#define GET_NEXT_DISPLAY_ROW() (timing_row - (TIMING_V_BACK - 2) + 1)
-
 void __no_inline_not_in_flash_func(drive_timing)()
 {
     // TODO: If we have other interrupt load on this core then only
@@ -78,10 +75,6 @@ void __no_inline_not_in_flash_func(end_of_line_isr)() {
     {
         display_start_new_frame();
     }
-    else if (NEED_DISPLAY())
-    {
-        display_next_row(GET_NEXT_DISPLAY_ROW());
-    }
     if (timing_row == TIMING_V_DISPLAY + 3)
     {
         display_end_frame();
@@ -118,55 +111,6 @@ void vga_entry() {
     hw_set_bits(&vga_pio->inte0, 0xf00);
     irq_set_exclusive_handler(PIO0_IRQ_0, end_of_line_isr);
     irq_set_enabled(PIO0_IRQ_0, true);
-
-    // Setup DMAs
-    dma_channel_config c = dma_channel_get_default_config(vga_red_dma);
-    channel_config_set_transfer_data_size(&c, DMA_SIZE_32);
-    channel_config_set_dreq(&c, pio_get_dreq(vga_pio, vga_red_sm, true));
-    channel_config_set_read_increment(&c, true);
-    channel_config_set_write_increment(&c, false);
-
-    dma_channel_configure(
-        vga_red_dma,               // Channel to be configured
-        &c,                        // The configuration we just created
-        &vga_pio->txf[vga_red_sm], // The write address
-        NULL,                      // The initial read address - set later
-        0,                         // Number of transfers - set later
-        false                      // Don't start yet
-    );
-
-    c = dma_channel_get_default_config(vga_green_dma);
-    channel_config_set_transfer_data_size(&c, DMA_SIZE_32);
-    channel_config_set_dreq(&c, pio_get_dreq(vga_pio, vga_green_sm, true));
-    channel_config_set_read_increment(&c, true);
-    channel_config_set_write_increment(&c, false);
-
-    dma_channel_configure(
-        vga_green_dma,               // Channel to be configured
-        &c,                          // The configuration we just created
-        &vga_pio->txf[vga_green_sm], // The write address
-        NULL,                        // The initial read address - set later
-        0,                           // Number of transfers - set later
-        false                        // Don't start yet
-    );
-
-    c = dma_channel_get_default_config(vga_blue_dma);
-    channel_config_set_transfer_data_size(&c, DMA_SIZE_32);
-    channel_config_set_dreq(&c, pio_get_dreq(vga_pio, vga_blue_sm, true));
-    channel_config_set_read_increment(&c, true);
-    channel_config_set_write_increment(&c, false);
-
-    dma_channel_configure(
-        vga_blue_dma,               // Channel to be configured
-        &c,                         // The configuration we just created
-        &vga_pio->txf[vga_blue_sm], // The write address
-        NULL,                       // The initial read address - set later
-        0,                          // Number of transfers - set later
-        false                       // Don't start yet
-    );
-
-    // Start display
-    display_start_new_frame();
 
     // Prime the timing SM
     drive_timing();

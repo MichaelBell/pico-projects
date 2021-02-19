@@ -6,10 +6,6 @@
 #define vga_blue_sm   2
 #define vga_timing_sm 3
 
-#define vga_red_dma   7
-#define vga_green_dma 6
-#define vga_blue_dma  5
-
 // Loop to run any main display code, called on core0 after setup.
 void display_loop();
 
@@ -18,9 +14,6 @@ void display_loop();
 
 // Call to user code to start transfers for next frame
 void display_start_new_frame();
-
-// Call to user to notify the next row to be displayed
-void display_next_row(uint16_t row);
 
 // Call to user to notify that the frame has ended, and any running
 // transfers should be aborted.

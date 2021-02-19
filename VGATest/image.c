@@ -3,6 +3,8 @@
 #include "pico/multicore.h"
 #include "hardware/dma.h"
 #include "hardware/sync.h"
+#include "hardware/pio.h"
+#include "hardware/irq.h"
 
 #include "vga.h"
 
@@ -11,6 +13,8 @@
 static uint32_t* data_pos;
 
 #define DISPLAY_COLS 640
+#define DISPLAY_ROWS 480
+
 #define MAX_CMD_LINE_LEN (((DISPLAY_COLS + 5) / 6) + 1)
 
 typedef struct {
@@ -26,24 +30,18 @@ channel_t channel[3];
 #define blue_chan channel[2]
 
 static uint16_t bufnum = 0;
+static uint16_t display_row = 0;
 
 static uint32_t zero = 0;
-static uint32_t row_ready = 0xffff;
 
 #define CORE_CMD_INIT_FRAME      1
-#define CORE_CMD_SETUP_NEXT_LINE 2
-
 
 #define BLACK99 0b01000001111100000111110000011111  // 99 pixels of black
 #define BLACK61 0b01000001111100000110000000000000  // 61 pixels of black
 
-void dma_complete_handler() {
-
-}
-
-void setup_next_line_ptr_and_len(uint row)
+static void setup_next_line_ptr_and_len()
 {
-  if (row >= 120 && data_pos < feeding_duck_dat + feeding_duck_dat_len) {
+  if (display_row >= 120 && data_pos < feeding_duck_dat + feeding_duck_dat_len) {
     bufnum ^= 1;
 
     uint32_t lens = *data_pos++;
@@ -68,12 +66,92 @@ void setup_next_line_ptr_and_len(uint row)
       channel[i].ptr = &zero;
     }
   }
-  row_ready = row;
-  __mem_fence_release();
+}
+
+#define vga_red_dma   5
+#define vga_green_dma 6
+#define vga_blue_dma  7
+#define vga_dma_channel_mask (0b111 << 5)
+static uint32_t complete_dma_channel_bits = 0;
+
+static void transfer_next_line()
+{
+  dma_channel_transfer_from_buffer_now(vga_red_dma, red_chan.ptr, red_chan.len);
+  dma_channel_transfer_from_buffer_now(vga_green_dma, green_chan.ptr, green_chan.len);
+  dma_channel_transfer_from_buffer_now(vga_blue_dma, blue_chan.ptr, blue_chan.len);
+  if (++display_row < DISPLAY_ROWS) 
+    setup_next_line_ptr_and_len();
+}
+
+void dma_complete_handler() 
+{
+  uint32_t ints = dma_hw->ints0 & vga_dma_channel_mask;
+  dma_hw->ints0 |= ints;
+  complete_dma_channel_bits |= ints;
+
+  if (complete_dma_channel_bits == vga_dma_channel_mask)
+  {
+    transfer_next_line();
+  }
+}
+
+static void setup_dma_channels()
+{
+    // Setup DMAs
+    dma_channel_config c = dma_channel_get_default_config(vga_red_dma);
+    channel_config_set_transfer_data_size(&c, DMA_SIZE_32);
+    channel_config_set_dreq(&c, pio_get_dreq(vga_pio, vga_red_sm, true));
+    channel_config_set_read_increment(&c, true);
+    channel_config_set_write_increment(&c, false);
+
+    dma_channel_configure(
+        vga_red_dma,               // Channel to be configured
+        &c,                        // The configuration we just created
+        &vga_pio->txf[vga_red_sm], // The write address
+        NULL,                      // The initial read address - set later
+        0,                         // Number of transfers - set later
+        false                      // Don't start yet
+    );
+
+    c = dma_channel_get_default_config(vga_green_dma);
+    channel_config_set_transfer_data_size(&c, DMA_SIZE_32);
+    channel_config_set_dreq(&c, pio_get_dreq(vga_pio, vga_green_sm, true));
+    channel_config_set_read_increment(&c, true);
+    channel_config_set_write_increment(&c, false);
+
+    dma_channel_configure(
+        vga_green_dma,               // Channel to be configured
+        &c,                          // The configuration we just created
+        &vga_pio->txf[vga_green_sm], // The write address
+        NULL,                        // The initial read address - set later
+        0,                           // Number of transfers - set later
+        false                        // Don't start yet
+    );
+
+    c = dma_channel_get_default_config(vga_blue_dma);
+    channel_config_set_transfer_data_size(&c, DMA_SIZE_32);
+    channel_config_set_dreq(&c, pio_get_dreq(vga_pio, vga_blue_sm, true));
+    channel_config_set_read_increment(&c, true);
+    channel_config_set_write_increment(&c, false);
+
+    dma_channel_configure(
+        vga_blue_dma,               // Channel to be configured
+        &c,                         // The configuration we just created
+        &vga_pio->txf[vga_blue_sm], // The write address
+        NULL,                       // The initial read address - set later
+        0,                          // Number of transfers - set later
+        false                       // Don't start yet
+    );
+
+    irq_set_exclusive_handler(DMA_IRQ_0, dma_complete_handler);
+
+    dma_hw->inte0 = vga_dma_channel_mask;
 }
 
 void display_loop() 
 {
+  setup_dma_channels();
+
   for (int i = 0; i < 3; ++i) {
     for (int j = 0; j < 2; ++j) {
       channel[i].buffer[j][0] = BLACK99;
@@ -91,12 +169,13 @@ void display_loop()
         case CORE_CMD_INIT_FRAME:
         {
           data_pos = feeding_duck_dat;
-          setup_next_line_ptr_and_len(0);
-          break;
-        }
-        case CORE_CMD_SETUP_NEXT_LINE:
-        {
-          setup_next_line_ptr_and_len(data);
+          display_row = 0;
+          setup_next_line_ptr_and_len();
+          
+          irq_set_enabled(DMA_IRQ_0, false);
+          transfer_next_line();
+          irq_set_enabled(DMA_IRQ_0, true);
+
           break;
         }
         default:
@@ -111,24 +190,6 @@ void display_loop()
 void __no_inline_not_in_flash_func(display_start_new_frame)() 
 {
   multicore_fifo_push_blocking(CORE_CMD_INIT_FRAME);
-}
-
-void __no_inline_not_in_flash_func(display_next_row)(uint16_t row)
-{
-  __mem_fence_acquire();
-  if (row_ready == row - 1)
-  {
-    dma_channel_transfer_from_buffer_now(vga_red_dma, red_chan.ptr, red_chan.len);
-    dma_channel_transfer_from_buffer_now(vga_green_dma, green_chan.ptr, green_chan.len);
-    dma_channel_transfer_from_buffer_now(vga_blue_dma, blue_chan.ptr, blue_chan.len);
-  }
-  else
-  {
-    dma_channel_transfer_from_buffer_now(vga_red_dma, &zero, 1);
-    dma_channel_transfer_from_buffer_now(vga_green_dma, &zero, 1);
-    dma_channel_transfer_from_buffer_now(vga_blue_dma, &zero, 1);
-  }
-  multicore_fifo_push_blocking(CORE_CMD_SETUP_NEXT_LINE | ((uint32_t)row << 8));
 }
 
 void __no_inline_not_in_flash_func(display_end_frame)() 
