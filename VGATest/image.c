@@ -8,12 +8,18 @@
 
 #include "vga.h"
 
-#include "feeding_duck320.h"
+//#include "feeding_duck320.h"
+#include "perseverance.h"
 
 static uint32_t* data_pos;
 
+#if 0
 #define DISPLAY_COLS 640
 #define DISPLAY_ROWS 480
+#else
+#define DISPLAY_COLS 1280
+#define DISPLAY_ROWS 720
+#endif
 
 #define MAX_CMD_LINE_LEN (((DISPLAY_COLS + 5) / 6) + 1)
 
@@ -34,29 +40,46 @@ static uint16_t display_row = 0;
 
 static uint32_t zero = 0;
 
+// Commands to core 0
 #define CORE_CMD_INIT_FRAME      1
+
+#define GRAYSCALE_BIT (1u << 31)
 
 #define BLACK99 0b01000001111100000111110000011111  // 99 pixels of black
 #define BLACK61 0b01000001111100000110000000000000  // 61 pixels of black
 
 static void setup_next_line_ptr_and_len()
 {
-  if (display_row >= 120 && data_pos < feeding_duck_dat + feeding_duck_dat_len) {
+  if (display_row >= 120 && data_pos < image_dat + image_dat_len) {
     bufnum ^= 1;
 
     uint32_t lens = *data_pos++;
-    red_chan.len = (lens & 0x3ff);
-    green_chan.len = ((lens >> 10) & 0x3ff);
-    blue_chan.len = (lens >> 20);
-    for (int i = 0; i < 3; ++i)
-    {
-      channel[i].ptr = channel[i].buffer[bufnum];
-      memcpy(channel[i].ptr + 2, data_pos, channel[i].len*sizeof(uint32_t));
-      data_pos += channel[i].len;
-      channel[i].ptr[channel[i].len + 2] = 0;
-      channel[i].len += 3;
+    if (lens & GRAYSCALE_BIT) {
+      red_chan.len = lens & 0x3ff;
+      red_chan.ptr = red_chan.buffer[bufnum];
+      memcpy(red_chan.ptr + 2, data_pos, red_chan.len*sizeof(uint32_t));
+      data_pos += red_chan.len;
+      red_chan.ptr[red_chan.len + 2] = 0;
+      red_chan.len += 3;
+
+      green_chan.ptr = blue_chan.ptr = red_chan.ptr;
+      green_chan.len = blue_chan.len = red_chan.len;
     }
-    assert(data_pos <= feeding_duck_dat + feeding_duck_dat_len);
+    else
+    {
+      red_chan.len = (lens & 0x3ff);
+      green_chan.len = ((lens >> 10) & 0x3ff);
+      blue_chan.len = (lens >> 20);
+      for (int i = 0; i < 3; ++i)
+      {
+        channel[i].ptr = channel[i].buffer[bufnum];
+        memcpy(channel[i].ptr + 2, data_pos, channel[i].len*sizeof(uint32_t));
+        data_pos += channel[i].len;
+        channel[i].ptr[channel[i].len + 2] = 0;
+        channel[i].len += 3;
+      }
+    }
+    assert(data_pos <= image_dat + image_dat_len);
   }
   else
   {
@@ -168,7 +191,7 @@ void display_loop()
       {
         case CORE_CMD_INIT_FRAME:
         {
-          data_pos = feeding_duck_dat;
+          data_pos = image_dat;
           display_row = 0;
           setup_next_line_ptr_and_len();
           

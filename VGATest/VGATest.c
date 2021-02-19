@@ -20,7 +20,8 @@ void print_capture_buf(const uint32_t *buf, uint pin_base, uint pin_count, uint3
 
 const uint analyser_sm = 3;
 
- // Timings from Basys 2 manual
+#if 0
+ // Timings for 640x480
 #define TIMING_V_PULSE    2
 #define TIMING_V_BACK    (30 + TIMING_V_PULSE)
 #define TIMING_V_DISPLAY (480 + TIMING_V_BACK)
@@ -29,6 +30,25 @@ const uint analyser_sm = 3;
 #define TIMING_H_PULSE   96
 #define TIMING_H_BACK    48
 #define TIMING_H_DISPLAY 640
+#define CLOCK_VCO   1500
+#define CLOCK_PD1   6
+#define CLOCK_PD2   5
+#define CLOCK_RATE  (50 * MHZ)
+#else
+ // Timings for 720p
+#define TIMING_V_PULSE    5
+#define TIMING_V_BACK    (20 + TIMING_V_PULSE)
+#define TIMING_V_DISPLAY (720 + TIMING_V_BACK)
+#define TIMING_V_FRONT   (3 + TIMING_V_DISPLAY)
+#define TIMING_H_FRONT   64
+#define TIMING_H_PULSE   128
+#define TIMING_H_BACK    192
+#define TIMING_H_DISPLAY 1280
+#define CLOCK_VCO   1044
+#define CLOCK_PD1   7
+#define CLOCK_PD2   1
+#define CLOCK_RATE  149142857
+#endif
 
 uint16_t timing_row = 0;
 
@@ -123,15 +143,15 @@ void vga_entry() {
 
 int main()
 {
-    // 50 MHz clock, for 25MHz pixel clock
-    set_sys_clock_pll(1500 * MHZ, 6, 5);
+    // Set appropriate clock
+    set_sys_clock_pll(CLOCK_VCO * MHZ, CLOCK_PD1, CLOCK_PD2);
 
     // Tell the periperal clock the new sys clock speed
     clock_configure(clk_peri,
                     0,
                     CLOCKS_CLK_PERI_CTRL_AUXSRC_VALUE_CLK_SYS,
-                    50 * MHZ,
-                    50 * MHZ);
+                    CLOCK_RATE,
+                    CLOCK_RATE);
 
     //stdio_init_all();
 
