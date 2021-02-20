@@ -1,3 +1,5 @@
+; Copyright (C) 2021 Michael Bell
+
 ; One channel of 5 bit pixel colour output
 ;
 ; Idea is to run 3 of these channels simultaneously for RGB

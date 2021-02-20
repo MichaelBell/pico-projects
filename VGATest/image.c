@@ -58,6 +58,14 @@ static uint32_t zero = 0;
 #define BLACK99 0b01000001111100000111110000011111  // 99 pixels of black
 #define BLACK61 0b01000001111100000110000000000000  // 61 pixels of black
 
+#define WHITE99 0x7fffffff  // 99 pixels of white
+#define WHITE92 0x7ffffff8  // 92 pixels of white
+
+const uint32_t white_line[] = {
+  WHITE99, WHITE99, WHITE99, WHITE99, WHITE99, WHITE99, 
+  WHITE99, WHITE99, WHITE99, WHITE99, WHITE99, WHITE99, WHITE92, 0
+};
+
 #ifdef IMAGE_IN_RAM
 // This is the from RAM version
 static void setup_next_line_ptr_and_len()
@@ -110,7 +118,15 @@ static void __time_critical_func(setup_next_line_ptr_and_len)()
 
   if (display_row == 0) scroll = (scroll + 1) & 0x3ff;
 
-  if (image_row < IMAGE_ROWS && display_row < DISPLAY_ROWS - 10)
+  if (false && (display_row == 0 || display_row == DISPLAY_ROWS - 1))
+  {
+    for (int i = 0; i < 3; ++i)
+    {
+      channel[i].len = count_of(white_line);
+      channel[i].ptr = (uint32_t*)white_line;
+    }
+  }
+  else if (display_row > 1 && image_row < IMAGE_ROWS && display_row < DISPLAY_ROWS - 1)
   //if (display_row > (scroll >> 2) && image_row < IMAGE_ROWS)
   {
     bufnum ^= 1;
@@ -143,6 +159,7 @@ static void __time_critical_func(setup_next_line_ptr_and_len)()
       {
         channel[i].ptr = channel[i].buffer[bufnum];
         flash_copy_data_blocking(channel[i].ptr + 2, channel[i].len);
+        //channel[i].len = MIN(20, channel[i].len);
         channel[i].ptr[channel[i].len + 2] = 0;
         channel[i].len += 3;
       }

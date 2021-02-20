@@ -1,3 +1,5 @@
+// Copyright (C) 2021 Michael Bell
+
 #include <stdio.h>
 #include "pico/stdlib.h"
 #include "pico/multicore.h"
@@ -5,6 +7,8 @@
 #include "hardware/dma.h"
 #include "hardware/clocks.h"
 #include "hardware/irq.h"
+#include "hardware/structs/bus_ctrl.h"
+#include "hardware/regs/busctrl.h"
 
 #include "vga.h"
 #include "vga.pio.h"
@@ -109,7 +113,7 @@ void __no_inline_not_in_flash_func(drive_timing)()
                 if (timing_row == TIMING_V_FRONT - 1) instr = 0x4000C001u;
                 if (timing_row >= TIMING_V_PULSE) instr |= 0x80000000u;
                 instr |= (TIMING_H_DISPLAY - 3) << 16;
-                pio_sm_put_blocking(vga_pio, vga_timing_sm, instr);
+                pio_sm_put(vga_pio, vga_timing_sm, instr);
 
                 if (++timing_row >= TIMING_V_FRONT) timing_row = 0;
                 break;
@@ -157,6 +161,10 @@ void __no_inline_not_in_flash_func(end_of_line_isr)() {
 
 // Setup must happen on core 1, to ensure interrupts are serviced fast enough.
 void vga_entry() {
+    // Give core 1 priority access to the bus as it drives timing directly
+    // and the shared PIO bus connection can get very busy with pixel data traffic
+    bus_ctrl_hw->priority = BUSCTRL_BUS_PRIORITY_PROC1_BITS;
+
     flash_init();
 
     uint offset = pio_add_program(vga_pio, &vga_channel_program);

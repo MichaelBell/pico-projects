@@ -1,4 +1,4 @@
-
+// Copyright (C) 2021 Michael Bell
 
 #define vga_pio pio0
 #define vga_red_sm    0 
