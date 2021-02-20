@@ -14,6 +14,12 @@
 #define USE_SSI_DMA
 #endif
 
+#ifdef USE_SSI_DMA
+#define FLASH_MIN_TRANSFER 16
+#else
+#define FLASH_MIN_TRANSFER 4
+#endif
+
 #define FLASH_BUF_LOG_SIZE_BYTES 13
 #define FLASH_BUF_LEN_WORDS (1 << (FLASH_BUF_LOG_SIZE_BYTES - 2))
 #define FLASH_BUF_IDX_MASK  (FLASH_BUF_LEN_WORDS - 1)
@@ -67,6 +73,12 @@ static void __no_inline_not_in_flash_func(flash_transfer)()
   {
     words_to_read = FLASH_BUF_LEN_WORDS - next_write_idx + (flash_prev_buffer_ptr - flash_buffer);
   }
+
+  // Don't make very small transfers.  Don't make a transfer that would leave
+  // a very small transfer to the end.
+  if (words_to_read < FLASH_MIN_TRANSFER || 
+      flash_total_words_requested + words_to_read + FLASH_MIN_TRANSFER > flash_source_data_len) 
+    return;
 
   if (words_to_read > flash_source_data_len - flash_total_words_requested)
     words_to_read = flash_source_data_len - flash_total_words_requested;

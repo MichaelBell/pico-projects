@@ -10,11 +10,12 @@
 #include "flash.h"
 
 //#include "feeding_duck320.h"
-#include "perseverance.h"
+//#include "perseverance.h"
+#include "pcrane480.h"
 
 static uint32_t* data_pos;
 
-#define IMAGE_ROWS 240
+#define IMAGE_ROWS 480
 
 #if 1
 #define DISPLAY_COLS 640
@@ -109,8 +110,8 @@ static void __time_critical_func(setup_next_line_ptr_and_len)()
 
   if (display_row == 0) scroll = (scroll + 1) & 0x3ff;
 
-  //if ((display_row & 1) == 0 && image_row < IMAGE_ROWS)
-  if (display_row > (scroll >> 2) && image_row < IMAGE_ROWS)
+  if (image_row < IMAGE_ROWS && display_row < DISPLAY_ROWS - 100)
+  //if (display_row > (scroll >> 2) && image_row < IMAGE_ROWS)
   {
     bufnum ^= 1;
     ++image_row;
@@ -123,10 +124,10 @@ static void __time_critical_func(setup_next_line_ptr_and_len)()
       red_chan.len = *lens & 0x3ff;
       red_chan.ptr = red_chan.buffer[bufnum];
 
-      flash_copy_data_blocking(red_chan.ptr + 2, red_chan.len);
+      flash_copy_data_blocking(red_chan.ptr, red_chan.len);
 
-      red_chan.ptr[red_chan.len + 2] = 0;
-      red_chan.len += 3;
+      red_chan.ptr[red_chan.len] = 0;
+      red_chan.len ++;
 
       green_chan.ptr = blue_chan.ptr = red_chan.ptr;
       green_chan.len = blue_chan.len = red_chan.len;
@@ -180,6 +181,7 @@ void __time_critical_func(dma_complete_handler)()
 
   if (complete_dma_channel_bits == vga_dma_channel_mask && display_row < DISPLAY_ROWS)
   {
+    complete_dma_channel_bits = 0;
     transfer_next_line();
   }
 }
@@ -245,12 +247,14 @@ void __time_critical_func(display_loop)()
   flash_set_stream(image_dat, image_dat_len);
 #endif
 
+#if 0
   for (int i = 0; i < 3; ++i) {
     for (int j = 0; j < 2; ++j) {
       channel[i].buffer[j][0] = BLACK99;
       channel[i].buffer[j][1] = BLACK61;
     }
   }
+#endif
 
   while(1) 
   {
