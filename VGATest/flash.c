@@ -8,9 +8,10 @@
 #include "hardware/irq.h"
 #include "pico/sync.h"
 
-#define FLASH_BUF_LEN_WORDS (128 * 16)
+#define FLASH_BUF_LOG_SIZE_BYTES 13
+#define FLASH_BUF_LEN_WORDS (1 << (FLASH_BUF_LOG_SIZE_BYTES - 2))
 #define FLASH_BUF_IDX_MASK  (FLASH_BUF_LEN_WORDS - 1)
-static uint32_t flash_buffer[FLASH_BUF_LEN_WORDS];
+static uint32_t flash_buffer[FLASH_BUF_LEN_WORDS] __attribute__((aligned(1 << FLASH_BUF_LOG_SIZE_BYTES)));
 
 // Location in buffer that was returned to the user on last read
 // We should write past here.
@@ -24,9 +25,6 @@ static volatile bool flash_stream_at_end;
 
 // Whether we are stopping streaming
 static volatile bool flash_stream_stop;
-
-// Critical section to ensure we sync stream start correctly
-static critical_section_t flash_stream_cs;
 
 // Next address in flash to stream from
 #define flash_cur_stream_addr (uint32_t*)(xip_ctrl_hw->stream_addr | 0x10000000)
@@ -61,46 +59,25 @@ static void __no_inline_not_in_flash_func(flash_transfer)()
   }
 
   uint32_t* next_write_addr = (flash_buffer + next_write_idx);
+  uint32_t words_to_read;
   if (next_write_addr < flash_prev_buffer_ptr)
   {
-    uint32_t words_to_read = flash_prev_buffer_ptr - next_write_addr;
-    if (words_to_read > 0)
-    {
-      dma_channel_transfer_to_buffer_now(flash_dma_chan, next_write_addr, words_to_read);
-    }
+    words_to_read = flash_prev_buffer_ptr - next_write_addr;
   }
   else
   {
-    uint32_t words_to_read = FLASH_BUF_LEN_WORDS - next_write_idx;
-    dma_channel_transfer_to_buffer_now(flash_dma_chan, next_write_addr, words_to_read);
+    words_to_read = FLASH_BUF_LEN_WORDS - next_write_idx + (flash_prev_buffer_ptr - flash_buffer);
   }
-}
 
-void __no_inline_not_in_flash_func(flash_transfer_isr)()
-{
-  if (dma_hw->ints1 & (1u << flash_dma_chan))
-  {
-    dma_hw->ints1 = 1u << flash_dma_chan;
-
-    critical_section_enter_blocking(&flash_stream_cs);
-    if (!flash_stream_stop) {
-      if (!dma_channel_is_busy(flash_dma_chan)) {
-        flash_transfer();
-      }
-    }
-    critical_section_exit(&flash_stream_cs);
-  }
+  dma_channel_transfer_to_buffer_now(flash_dma_chan, next_write_addr, words_to_read - 1);
 }
 
 void __time_critical_func(flash_reset_stream)()
 {
   // Stop any running transfers
   if (dma_channel_is_busy(flash_dma_chan)) {
-    critical_section_enter_blocking(&flash_stream_cs);
-    flash_stream_stop = true;
-    xip_ctrl_hw->stream_ctr = 0;
     dma_channel_abort(flash_dma_chan);
-    critical_section_exit(&flash_stream_cs);
+    xip_ctrl_hw->stream_ctr = 0;
 
     // Required to ensure the next flash transfer runs correctly.
     (void)*(io_rw_32*)XIP_NOCACHE_NOALLOC_BASE;
@@ -120,10 +97,9 @@ void __time_critical_func(flash_reset_stream)()
   xip_ctrl_hw->stream_addr = (uintptr_t)flash_source_data_ptr;
   xip_ctrl_hw->stream_ctr = flash_source_data_len;
 
-  critical_section_enter_blocking(&flash_stream_cs);
-  flash_stream_stop = false;
-  dma_channel_transfer_to_buffer_now(flash_dma_chan, flash_buffer, FLASH_BUF_LEN_WORDS);
-  critical_section_exit(&flash_stream_cs);
+  // Read one less word to prevent the write address wrapping back to the beginning
+  // and then we can't tell whether no data has been written or all the data has been written.
+  dma_channel_transfer_to_buffer_now(flash_dma_chan, flash_buffer, FLASH_BUF_LEN_WORDS - 1);
 }
 
 void flash_set_stream(uint32_t* data, uint32_t len)
@@ -137,14 +113,13 @@ void flash_set_stream(uint32_t* data, uint32_t len)
 
 void flash_init()
 {
-  critical_section_init(&flash_stream_cs);
-
   // Setup the DMA channel
   dma_channel_config c = dma_channel_get_default_config(flash_dma_chan);
   channel_config_set_transfer_data_size(&c, DMA_SIZE_32);
   channel_config_set_dreq(&c, DREQ_XIP_STREAM);
   channel_config_set_read_increment(&c, false);
   channel_config_set_write_increment(&c, true);
+  channel_config_set_ring(&c, true, FLASH_BUF_LOG_SIZE_BYTES);
 
   dma_channel_configure(
       flash_dma_chan,            // Channel to be configured
@@ -154,11 +129,6 @@ void flash_init()
       FLASH_BUF_LEN_WORDS,       // Number of transfers - set later
       false                      // Don't start yet
   );
-
-  // Currently not working.
-  irq_set_exclusive_handler(DMA_IRQ_1, flash_transfer_isr);
-  dma_hw->inte1 = 1u << flash_dma_chan;
-  irq_set_enabled(DMA_IRQ_1, true);
 }
 
 // Request data from flash.  Returns amount of data that was
@@ -174,17 +144,9 @@ uint32_t __no_inline_not_in_flash_func(flash_get_data)(uint32_t len_req, uint32_
   flash_prev_buffer_ptr = flash_buffer_ptr;
 
   // Check whether we should now restart the transfer
-  if (!dma_channel_is_busy(flash_dma_chan) && 
-      (dma_hw->ints1 & (1u << flash_dma_chan)) == 0)
+  if (!dma_channel_is_busy(flash_dma_chan))
   {
-    // We should probably restart the transfer.
-    // Protect the restart in a critical section.
-    // TODO: Work out a safe way of doing this without holding
-    //       the lock for so long.
-    critical_section_enter_blocking(&flash_stream_cs);
-    if (!dma_channel_is_busy(flash_dma_chan))
-      flash_transfer();
-    critical_section_exit(&flash_stream_cs);
+    flash_transfer();
   }
 
   uint32_t words_available = 0;
@@ -220,6 +182,5 @@ void __not_in_flash_func(flash_copy_data_blocking)(uint32_t* dst_ptr, uint32_t l
     memcpy(write_ptr, data_ptr, words_read * sizeof(uint32_t));
     write_ptr += words_read;
     words_to_read -= words_read;
-    //if (words_to_read != 0 && flash_buffer_ptr != flash_buffer) __breakpoint();
   }
 }
