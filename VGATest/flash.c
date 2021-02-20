@@ -11,7 +11,7 @@
 #include "pico/sync.h"
 
 #if defined(PICO_COPY_TO_RAM) && PICO_COPY_TO_RAM
-//#define USE_SSI_DMA
+#define USE_SSI_DMA
 #endif
 
 #define FLASH_BUF_LOG_SIZE_BYTES 13
@@ -152,6 +152,7 @@ void flash_init()
   channel_config_set_read_increment(&c, false);
   channel_config_set_write_increment(&c, true);
   channel_config_set_ring(&c, true, FLASH_BUF_LOG_SIZE_BYTES);
+  channel_config_set_bswap(&c, true);
 
 #ifdef USE_SSI_DMA
   channel_config_set_dreq(&c, DREQ_XIP_SSIRX);
