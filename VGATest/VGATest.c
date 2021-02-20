@@ -22,7 +22,7 @@ void print_capture_buf(const uint32_t *buf, uint pin_base, uint pin_count, uint3
 
 const uint analyser_sm = 3;
 
-#if 1
+#if 0
  // Timings for 640x480
 #define TIMING_V_PULSE    2
 #define TIMING_V_BACK    (30 + TIMING_V_PULSE)
@@ -37,12 +37,12 @@ const uint analyser_sm = 3;
 #define CLOCK_PD2   5
 #define CLOCK_RATE  (50 * MHZ)
 #else
-#if 0
+#if 1
  // Timings for 720p
 #define TIMING_V_PULSE    5
-#define TIMING_V_BACK    (20 + TIMING_V_PULSE)
+#define TIMING_V_BACK    (19 + TIMING_V_PULSE)
 #define TIMING_V_DISPLAY (720 + TIMING_V_BACK)
-#define TIMING_V_FRONT   (3 + TIMING_V_DISPLAY)
+#define TIMING_V_FRONT   (4 + TIMING_V_DISPLAY)
 #define TIMING_H_FRONT   64
 #define TIMING_H_PULSE   128
 #define TIMING_H_BACK    192

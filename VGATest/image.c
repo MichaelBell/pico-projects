@@ -11,17 +11,17 @@
 
 //#include "feeding_duck320.h"
 //#include "perseverance.h"
-#include "pcrane480.h"
+#include "pcrane720.h"
 
 static uint32_t* data_pos;
 
-#define IMAGE_ROWS 480
+#define IMAGE_ROWS 720
 
-#if 1
+#if 0
 #define DISPLAY_COLS 640
 #define DISPLAY_ROWS 480
 #else
-#if 0
+#if 1
 #define DISPLAY_COLS 1280
 #define DISPLAY_ROWS 720
 #else
@@ -110,7 +110,7 @@ static void __time_critical_func(setup_next_line_ptr_and_len)()
 
   if (display_row == 0) scroll = (scroll + 1) & 0x3ff;
 
-  if (image_row < IMAGE_ROWS && display_row < DISPLAY_ROWS - 100)
+  if (image_row < IMAGE_ROWS && display_row < DISPLAY_ROWS - 10)
   //if (display_row > (scroll >> 2) && image_row < IMAGE_ROWS)
   {
     bufnum ^= 1;
@@ -124,10 +124,12 @@ static void __time_critical_func(setup_next_line_ptr_and_len)()
       red_chan.len = *lens & 0x3ff;
       red_chan.ptr = red_chan.buffer[bufnum];
 
-      flash_copy_data_blocking(red_chan.ptr, red_chan.len);
+      flash_copy_data_blocking(red_chan.ptr + 2, red_chan.len);
 
-      red_chan.ptr[red_chan.len] = 0;
-      red_chan.len ++;
+      //red_chan.len = MIN(20, red_chan.len);
+
+      red_chan.ptr[red_chan.len + 2] = 0;
+      red_chan.len += 3;
 
       green_chan.ptr = blue_chan.ptr = red_chan.ptr;
       green_chan.len = blue_chan.len = red_chan.len;
@@ -247,7 +249,7 @@ void __time_critical_func(display_loop)()
   flash_set_stream(image_dat, image_dat_len);
 #endif
 
-#if 0
+#if 1
   for (int i = 0; i < 3; ++i) {
     for (int j = 0; j < 2; ++j) {
       channel[i].buffer[j][0] = BLACK99;
