@@ -37,10 +37,7 @@ static uint32_t flash_source_data_len;
 // Currently assuming we'll use either SD or flash.
 #define flash_dma_chan 11
 
-// ISR for when the DMA from the flash finishes
-// in order to schedule the next transfer
-// Can also be called manually to restart after
-// the buffer got full
+// Start streaming more bytes from flash if there is space in the buffer
 static void __no_inline_not_in_flash_func(flash_transfer)()
 {
   uint32_t next_write_idx = (uint32_t*)dma_hw->ch[flash_dma_chan].write_addr - flash_buffer;
@@ -69,7 +66,7 @@ static void __no_inline_not_in_flash_func(flash_transfer)()
     words_to_read = FLASH_BUF_LEN_WORDS - next_write_idx + (flash_prev_buffer_ptr - flash_buffer);
   }
 
-  dma_channel_transfer_to_buffer_now(flash_dma_chan, next_write_addr, words_to_read - 1);
+  dma_channel_transfer_to_buffer_now(flash_dma_chan, next_write_addr, words_to_read);
 }
 
 void __time_critical_func(flash_reset_stream)()
