@@ -107,10 +107,10 @@ static void __time_critical_func(setup_next_line_ptr_and_len)()
 {
   static uint16_t scroll = 0;
 
-  if (display_row == 0) scroll = (scroll + 1) & 0xfff;
+  if (display_row == 0) scroll = (scroll + 1) & 0x3ff;
 
   //if ((display_row & 1) == 0 && image_row < IMAGE_ROWS)
-  if (display_row > (scroll >> 4) && image_row < IMAGE_ROWS)
+  if (display_row > (scroll >> 2) && image_row < IMAGE_ROWS)
   {
     bufnum ^= 1;
     ++image_row;

@@ -1,11 +1,9 @@
 //#define IMAGE_IN_RAM
 
-#ifndef IMAGE_IN_RAM
-const
-#endif
-unsigned char perseverance_dat_raw[] __attribute__((aligned(4)))  
-#ifndef IMAGE_IN_RAM
-__attribute__((section(".flashdata"))) 
+#ifdef IMAGE_IN_RAM
+unsigned char perseverance_dat_raw[] __attribute__((aligned(4)))
+#else
+const unsigned char perseverance_dat_raw[] __attribute__((aligned(4))) __attribute__((section(".flashdata"))) 
 #endif
 = {
   0x36, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00, 0xc0, 0x00, 0x00, 0x00, 0xc0,

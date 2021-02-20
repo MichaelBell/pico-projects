@@ -6,7 +6,13 @@
 #include "hardware/dma.h"
 #include "hardware/structs/xip_ctrl.h"
 #include "hardware/irq.h"
+#include "hardware/structs/ssi.h"
+#include "hardware/regs/ssi.h"
 #include "pico/sync.h"
+
+#if defined(PICO_COPY_TO_RAM) && PICO_COPY_TO_RAM
+//#define USE_SSI_DMA
+#endif
 
 #define FLASH_BUF_LOG_SIZE_BYTES 13
 #define FLASH_BUF_LEN_WORDS (1 << (FLASH_BUF_LOG_SIZE_BYTES - 2))
@@ -20,14 +26,11 @@ static volatile uint32_t* flash_prev_buffer_ptr;
 // Location in buffer that will be returned to the user on next read
 static volatile uint32_t* flash_buffer_ptr;
 
-// Whether we read to the end of the stream
-static volatile bool flash_stream_at_end;
+// Words that have been requested
+static uint32_t flash_total_words_requested;
 
-// Whether we are stopping streaming
-static volatile bool flash_stream_stop;
-
-// Next address in flash to stream from
-#define flash_cur_stream_addr (uint32_t*)(xip_ctrl_hw->stream_addr | 0x10000000)
+// End of current transfer
+static uint32_t* flash_target_write_addr;
 
 // Source data in flash
 static uint32_t* flash_source_data_ptr;
@@ -48,10 +51,9 @@ static void __no_inline_not_in_flash_func(flash_transfer)()
     return;
   }
 
-  if (flash_cur_stream_addr >= flash_source_data_ptr + flash_source_data_len)
+  if (flash_total_words_requested >= flash_source_data_len)
   {
     // Finished stream.
-    flash_stream_at_end = true;
     return;
   }
 
@@ -66,37 +68,71 @@ static void __no_inline_not_in_flash_func(flash_transfer)()
     words_to_read = FLASH_BUF_LEN_WORDS - next_write_idx + (flash_prev_buffer_ptr - flash_buffer);
   }
 
+  if (words_to_read > flash_source_data_len - flash_total_words_requested)
+    words_to_read = flash_source_data_len - flash_total_words_requested;
+
+#ifdef USE_SSI_DMA
+  ssi_hw->ssienr = 0;
+  ssi_hw->ctrlr1 = words_to_read - 1;
+  ssi_hw->dmacr = SSI_DMACR_BITS;
+  ssi_hw->ssienr = 1;
+#endif
+
   dma_channel_transfer_to_buffer_now(flash_dma_chan, next_write_addr, words_to_read);
+#ifdef USE_SSI_DMA
+  ssi_hw->dr0 = ((uintptr_t)(flash_source_data_ptr + flash_total_words_requested) << 8) | 0xa0;
+#endif
+
+  flash_total_words_requested += words_to_read;
+  flash_target_write_addr = flash_buffer + ((next_write_idx + words_to_read) & FLASH_BUF_IDX_MASK);
 }
 
 void __time_critical_func(flash_reset_stream)()
 {
   // Stop any running transfers
   if (dma_channel_is_busy(flash_dma_chan)) {
+#ifdef USE_SSI_DMA
+    // TODO: Investigate if abort is possible.
+    while (dma_channel_is_busy);
+#else
     dma_channel_abort(flash_dma_chan);
     xip_ctrl_hw->stream_ctr = 0;
 
     // Required to ensure the next flash transfer runs correctly.
     (void)*(io_rw_32*)XIP_NOCACHE_NOALLOC_BASE;
+#endif
   }
 
-  // Clear the XIP FIFO
+  // Clear the receive FIFO
+#ifndef USE_SSI_DMA
   while (!(xip_ctrl_hw->stat & XIP_STAT_FIFO_EMPTY))
     (void) xip_ctrl_hw->stream_fifo;
+#endif
 
   // Reset read pointers to beginning
   flash_buffer_ptr = flash_prev_buffer_ptr = flash_buffer;
 
-  // Reset state tracking
-  flash_stream_at_end = false;
-
-  // Setup the first transfer
-  xip_ctrl_hw->stream_addr = (uintptr_t)flash_source_data_ptr;
-  xip_ctrl_hw->stream_ctr = flash_source_data_len;
-
   // Read one less word to prevent the write address wrapping back to the beginning
   // and then we can't tell whether no data has been written or all the data has been written.
-  dma_channel_transfer_to_buffer_now(flash_dma_chan, flash_buffer, FLASH_BUF_LEN_WORDS - 1);
+  flash_total_words_requested = FLASH_BUF_LEN_WORDS - 1;
+  if (flash_total_words_requested > flash_source_data_len) flash_total_words_requested = flash_source_data_len;
+
+  // Setup the transfer
+#ifdef USE_SSI_DMA
+  ssi_hw->ssienr = 0;
+  ssi_hw->ctrlr1 = flash_total_words_requested - 1;
+  ssi_hw->dmacr = SSI_DMACR_BITS;
+  ssi_hw->ssienr = 1;
+#else
+  xip_ctrl_hw->stream_addr = (uintptr_t)flash_source_data_ptr;
+  xip_ctrl_hw->stream_ctr = flash_source_data_len;
+#endif
+
+  dma_channel_transfer_to_buffer_now(flash_dma_chan, flash_buffer, flash_total_words_requested);
+
+#ifdef USE_SSI_DMA
+  ssi_hw->dr0 = ((uintptr_t)flash_source_data_ptr << 8) | 0xa0;
+#endif
 }
 
 void flash_set_stream(uint32_t* data, uint32_t len)
@@ -113,11 +149,22 @@ void flash_init()
   // Setup the DMA channel
   dma_channel_config c = dma_channel_get_default_config(flash_dma_chan);
   channel_config_set_transfer_data_size(&c, DMA_SIZE_32);
-  channel_config_set_dreq(&c, DREQ_XIP_STREAM);
   channel_config_set_read_increment(&c, false);
   channel_config_set_write_increment(&c, true);
   channel_config_set_ring(&c, true, FLASH_BUF_LOG_SIZE_BYTES);
 
+#ifdef USE_SSI_DMA
+  channel_config_set_dreq(&c, DREQ_XIP_SSIRX);
+  dma_channel_configure(
+      flash_dma_chan,            // Channel to be configured
+      &c,                        // The configuration we just created
+      flash_buffer,              // The write address
+      (const void*)&ssi_hw->dr0, // The read address
+      0,                         // Number of transfers - set later
+      false                      // Don't start yet
+  );
+#else
+  channel_config_set_dreq(&c, DREQ_XIP_STREAM);
   dma_channel_configure(
       flash_dma_chan,            // Channel to be configured
       &c,                        // The configuration we just created
@@ -126,6 +173,7 @@ void flash_init()
       FLASH_BUF_LEN_WORDS,       // Number of transfers - set later
       false                      // Don't start yet
   );
+#endif
 }
 
 // Request data from flash.  Returns amount of data that was
@@ -158,14 +206,19 @@ uint32_t __no_inline_not_in_flash_func(flash_get_data)(uint32_t len_req, uint32_
   {
     flash_transfer();
   }
-  else if (true_words_available < FLASH_BUF_LEN_WORDS / 2 && dma_hw->ch[flash_dma_chan].transfer_count < FLASH_BUF_LEN_WORDS / 4)
+#ifndef USE_SSI_DMA
+  else if (true_words_available < FLASH_BUF_LEN_WORDS / 2 && 
+           dma_hw->ch[flash_dma_chan].transfer_count < FLASH_BUF_LEN_WORDS / 4 &&
+           flash_source_data_len - flash_total_words_requested >= FLASH_BUF_LEN_WORDS / 4)
   {
     // Low buffer and near the end of the previous transfer so there's
     // more space for a longer transfer.  Restart to avoid getting to the end
     // of a transfer and having to wait for another read to restart it.
     dma_channel_abort(flash_dma_chan);
+    flash_total_words_requested -= (flash_target_write_addr - (uint32_t*)dma_hw->ch[flash_dma_chan].write_addr) & FLASH_BUF_IDX_MASK;
     flash_transfer();
   }
+#endif
 
   if (words_available < len_req) len_req = words_available;
 
