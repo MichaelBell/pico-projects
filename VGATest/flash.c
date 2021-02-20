@@ -140,20 +140,31 @@ uint32_t __no_inline_not_in_flash_func(flash_get_data)(uint32_t len_req, uint32_
   uint32_t* write_ptr = (uint32_t*)dma_hw->ch[flash_dma_chan].write_addr;
   flash_prev_buffer_ptr = flash_buffer_ptr;
 
+  uint32_t words_available = 0;
+  uint32_t true_words_available = 0;
+  if (write_ptr < flash_buffer_ptr) {
+    // Write pointer behind read pointer means we have wrapped.  Can read until end of buffer
+    words_available = FLASH_BUF_LEN_WORDS - (flash_buffer_ptr - flash_buffer);
+    true_words_available = words_available + (write_ptr - flash_buffer);
+  }
+  else if (write_ptr > flash_buffer_ptr)
+  {
+    words_available = write_ptr - flash_buffer_ptr;
+    true_words_available = words_available;
+  }
+
   // Check whether we should now restart the transfer
   if (!dma_channel_is_busy(flash_dma_chan))
   {
     flash_transfer();
   }
-
-  uint32_t words_available = 0;
-  if (write_ptr < flash_buffer_ptr) {
-    // Write pointer behind read pointer means we have wrapped.  Can read until end of buffer
-    words_available = FLASH_BUF_LEN_WORDS - (flash_buffer_ptr - flash_buffer);
-  }
-  else if (write_ptr > flash_buffer_ptr)
+  else if (true_words_available < FLASH_BUF_LEN_WORDS / 2 && dma_hw->ch[flash_dma_chan].transfer_count < FLASH_BUF_LEN_WORDS / 4)
   {
-    words_available = write_ptr - flash_buffer_ptr;
+    // Low buffer and near the end of the previous transfer so there's
+    // more space for a longer transfer.  Restart to avoid getting to the end
+    // of a transfer and having to wait for another read to restart it.
+    dma_channel_abort(flash_dma_chan);
+    flash_transfer();
   }
 
   if (words_available < len_req) len_req = words_available;

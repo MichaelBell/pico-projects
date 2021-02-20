@@ -105,7 +105,12 @@ static void setup_next_line_ptr_and_len()
 // This streams from flash
 static void __time_critical_func(setup_next_line_ptr_and_len)()
 {
-  if (display_row >= 60 && image_row < IMAGE_ROWS)
+  static uint16_t scroll = 0;
+
+  if (display_row == 0) scroll = (scroll + 1) & 0xfff;
+
+  //if ((display_row & 1) == 0 && image_row < IMAGE_ROWS)
+  if (display_row > (scroll >> 4) && image_row < IMAGE_ROWS)
   {
     bufnum ^= 1;
     ++image_row;
@@ -173,7 +178,7 @@ void __time_critical_func(dma_complete_handler)()
   dma_hw->ints0 = ints;
   complete_dma_channel_bits |= ints;
 
-  if (complete_dma_channel_bits == vga_dma_channel_mask)
+  if (complete_dma_channel_bits == vga_dma_channel_mask && display_row < DISPLAY_ROWS)
   {
     transfer_next_line();
   }
@@ -263,7 +268,7 @@ void __time_critical_func(display_loop)()
           setup_next_line_ptr_and_len();
           
           irq_set_enabled(DMA_IRQ_0, false);
-          dma_hw->ints0 |= vga_dma_channel_mask;
+          dma_hw->ints0 = vga_dma_channel_mask;
           transfer_next_line();
           irq_set_enabled(DMA_IRQ_0, true);
 

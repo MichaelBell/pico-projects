@@ -128,11 +128,11 @@ void __no_inline_not_in_flash_func(end_of_line_isr)() {
     else eol_row++;
     hw_clear_bits(&vga_pio->irq, 0x3);
 
-    if (eol_row == TIMING_V_DISPLAY)
+    if (eol_row == TIMING_V_DISPLAY || eol_row == TIMING_V_DISPLAY + 1)
     {
         display_end_frame();
     }
-    else if (eol_row == TIMING_V_DISPLAY + 1)
+    else if (eol_row == TIMING_V_DISPLAY + 2)
     {
         // Force SMs to get back into a good state:
         //       Disable
@@ -143,13 +143,13 @@ void __no_inline_not_in_flash_func(end_of_line_isr)() {
         for (uint sm = vga_red_sm; sm <= vga_blue_sm; ++sm)
         {
             pio_sm_set_enabled(vga_pio, sm, false);
-            pio_sm_exec(vga_pio, sm, pio_encode_jmp(vga_channel_offset_end));
-            pio_sm_exec(vga_pio, sm, pio_encode_mov(pio_osr, pio_null));
             pio_sm_drain_tx_fifo(vga_pio, sm);
+            pio_sm_exec_wait_blocking(vga_pio, sm, pio_encode_jmp(vga_channel_offset_end));
+            pio_sm_exec_wait_blocking(vga_pio, sm, pio_encode_mov(pio_osr, pio_null));
             pio_sm_set_enabled(vga_pio, sm, true);
         }
     }
-    else if (eol_row == TIMING_V_DISPLAY + 2)
+    else if (eol_row == TIMING_V_DISPLAY + 3)
     {
         display_start_new_frame();
     }
