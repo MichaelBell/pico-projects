@@ -74,14 +74,15 @@ static void __no_inline_not_in_flash_func(flash_transfer)()
     words_to_read = FLASH_BUF_LEN_WORDS - next_write_idx + (flash_prev_buffer_ptr - flash_buffer);
   }
 
+  if (words_to_read > flash_source_data_len - flash_total_words_requested)
+    words_to_read = flash_source_data_len - flash_total_words_requested;
+
   // Don't make very small transfers.  Don't make a transfer that would leave
   // a very small transfer to the end.
   if (words_to_read < FLASH_MIN_TRANSFER || 
-      flash_total_words_requested + words_to_read + FLASH_MIN_TRANSFER > flash_source_data_len) 
+      ((flash_total_words_requested + words_to_read != flash_source_data_len) &&
+       (flash_total_words_requested + words_to_read + FLASH_MIN_TRANSFER > flash_source_data_len)))
     return;
-
-  if (words_to_read > flash_source_data_len - flash_total_words_requested)
-    words_to_read = flash_source_data_len - flash_total_words_requested;
 
 #ifdef USE_SSI_DMA
   ssi_hw->ssienr = 0;
@@ -197,9 +198,7 @@ uint32_t __no_inline_not_in_flash_func(flash_get_data)(uint32_t len_req, uint32_
   assert(len_req <= FLASH_BUF_LEN_WORDS / 2);
   assert(len_req > 0);
 
-  // Can now write over previously returned buffer.
   uint32_t* write_ptr = (uint32_t*)dma_hw->ch[flash_dma_chan].write_addr;
-  flash_prev_buffer_ptr = flash_buffer_ptr;
 
   uint32_t words_available = 0;
   uint32_t true_words_available = 0;
@@ -213,6 +212,10 @@ uint32_t __no_inline_not_in_flash_func(flash_get_data)(uint32_t len_req, uint32_
     words_available = write_ptr - flash_buffer_ptr;
     true_words_available = words_available;
   }
+
+  // Can now write over previously returned buffer.
+  if (words_available > 0)
+    flash_prev_buffer_ptr = flash_buffer_ptr;
 
   // Check whether we should now restart the transfer
   if (!dma_channel_is_busy(flash_dma_chan))

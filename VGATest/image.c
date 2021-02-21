@@ -1,3 +1,5 @@
+// Copyright (C) 2021 Michael Bell
+
 #include <string.h>
 #include "pico/stdlib.h"
 #include "pico/multicore.h"
@@ -12,6 +14,9 @@
 //#include "feeding_duck320.h"
 //#include "perseverance.h"
 #include "pcrane720.h"
+//#include "feeding_duck720.h"
+
+//#include "pcrane1078.h"
 
 static uint32_t* data_pos;
 
@@ -118,6 +123,8 @@ static void __time_critical_func(setup_next_line_ptr_and_len)()
 
   if (display_row == 0) scroll = (scroll + 1) & 0x3ff;
 
+  // This is useful for forcing the display to adjust to the picture if you've
+  // confused it.
   if (false && (display_row == 0 || display_row == DISPLAY_ROWS - 1))
   {
     for (int i = 0; i < 3; ++i)
@@ -126,8 +133,8 @@ static void __time_critical_func(setup_next_line_ptr_and_len)()
       channel[i].ptr = (uint32_t*)white_line;
     }
   }
-  else if (display_row > 1 && image_row < IMAGE_ROWS && display_row < DISPLAY_ROWS - 1)
-  //if (display_row > (scroll >> 2) && image_row < IMAGE_ROWS)
+
+  else if (image_row < IMAGE_ROWS /*&& display_row < DISPLAY_ROWS - 2*/)
   {
     bufnum ^= 1;
     ++image_row;
@@ -142,8 +149,6 @@ static void __time_critical_func(setup_next_line_ptr_and_len)()
 
       flash_copy_data_blocking(red_chan.ptr + 2, red_chan.len);
 
-      //red_chan.len = MIN(20, red_chan.len);
-
       red_chan.ptr[red_chan.len + 2] = 0;
       red_chan.len += 3;
 
@@ -152,16 +157,16 @@ static void __time_critical_func(setup_next_line_ptr_and_len)()
     }
     else
     {
+      const uint32_t offset = 2;
       red_chan.len = (*lens & 0x3ff);
       green_chan.len = ((*lens >> 10) & 0x3ff);
       blue_chan.len = (*lens >> 20);
       for (int i = 0; i < 3; ++i)
       {
         channel[i].ptr = channel[i].buffer[bufnum];
-        flash_copy_data_blocking(channel[i].ptr + 2, channel[i].len);
-        //channel[i].len = MIN(20, channel[i].len);
-        channel[i].ptr[channel[i].len + 2] = 0;
-        channel[i].len += 3;
+        flash_copy_data_blocking(channel[i].ptr + offset, channel[i].len);
+        channel[i].ptr[channel[i].len + offset] = 0;
+        channel[i].len += offset + 1;
       }
     }
     assert(data_pos <= image_dat + image_dat_len);
@@ -292,6 +297,7 @@ void __time_critical_func(display_loop)()
           
           irq_set_enabled(DMA_IRQ_0, false);
           dma_hw->ints0 = vga_dma_channel_mask;
+          complete_dma_channel_bits = 0;
           transfer_next_line();
           irq_set_enabled(DMA_IRQ_0, true);
 
