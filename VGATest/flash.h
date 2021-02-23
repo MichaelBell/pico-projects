@@ -4,8 +4,9 @@
 // Configure the flash streaming resources
 void flash_init();
 
-// Set the data to stream and start streaming.
-void flash_set_stream(uint32_t* data, uint32_t len);
+// Set the data to stream and optionally start streaming.
+// If start_streaming is false then start the stream by calling reset_stream.
+void flash_set_stream(uint32_t* data, uint32_t len, bool start_streaming);
 
 // Request data from flash.  Returns amount of data that was
 // available - may be less than amount requested, and sets ptr_out 

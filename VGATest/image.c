@@ -9,7 +9,7 @@
 #include "hardware/irq.h"
 
 #include "vga.h"
-#include "flash.h"
+#include "decompress.h"
 
 //#include "feeding_duck320.h"
 //#include "perseverance.h"
@@ -37,10 +37,14 @@ static uint32_t* data_pos;
 
 #define MAX_CMD_LINE_LEN (((DISPLAY_COLS + 5) / 6) + 1)
 
+#define PIXEL_SYMBOLS_IDX 0
+#define RLE_SYMBOLS_IDX 1
+
 typedef struct {
   uint32_t buffer[2][MAX_CMD_LINE_LEN];
   uint32_t* ptr;
   uint32_t len;
+  uint16_t symbol_table[2][SYMBOLS_IN_TABLE];
 } channel_t;
 
 channel_t channel[3];
@@ -70,6 +74,58 @@ const uint32_t white_line[] = {
   WHITE99, WHITE99, WHITE99, WHITE99, WHITE99, WHITE99, 
   WHITE99, WHITE99, WHITE99, WHITE99, WHITE99, WHITE99, WHITE92, 0
 };
+
+static void read_compression_tables()
+{
+  for (int i = 0; i < 3; ++i)
+  {
+    for (int j = 0; j < 2; ++j)
+    {
+      decomp_read_table(channel[i].symbol_table[j]);
+    }
+  }
+}
+
+static void read_line(uint32_t channel_idx, uint32_t offset)
+{
+  uint32_t len = decomp_get_bits(13);
+
+  uint32_t* cmd_ptr = channel[channel_idx].ptr + offset;
+  channel[channel_idx].len = 0;
+
+  len += compressed_bits_read;
+  
+  while (compressed_bits_read < len)
+  {
+    uint32_t cmd_type = decomp_get_bits(1);
+    uint32_t cmd;
+    uint16_t* table;
+    if (cmd_type)
+    {
+      cmd = 0xC0000000u;
+      table = channel[channel_idx].symbol_table[PIXEL_SYMBOLS_IDX];
+    }
+    else
+    {
+      cmd = 0x40000000u;
+      table = channel[channel_idx].symbol_table[RLE_SYMBOLS_IDX];
+    }
+
+    cmd |= decomp_get_symbol(table) << 20;
+    cmd |= decomp_get_symbol(table) << 10;
+    cmd |= decomp_get_symbol(table);
+    *cmd_ptr++ = cmd;
+  }
+  assert(compressed_bits_read == len);
+  channel[channel_idx].len = cmd_ptr - (channel[channel_idx].ptr + offset);
+
+  if (channel_idx == 2)
+  {
+    // Align to 32-bit word.
+    if (compressed_bits_read & 0x1f)
+      decomp_get_bits(32 - (compressed_bits_read & 0x1f));
+  }
+}
 
 #ifdef IMAGE_IN_RAM
 // This is the from RAM version
@@ -134,37 +190,19 @@ static void __time_critical_func(setup_next_line_ptr_and_len)()
     }
   }
 
-  else if (image_row < IMAGE_ROWS /*&& display_row < DISPLAY_ROWS - 2*/)
+  else if (image_row < IMAGE_ROWS && (display_row & 0xf) == 0) //display_row < DISPLAY_ROWS - 100)
   {
     bufnum ^= 1;
     ++image_row;
 
-    // Extract lengths (1 word)
-    uint32_t* lens;
-    while (!flash_get_data(1, &lens));
-
-    if (*lens & GRAYSCALE_BIT) {
-      red_chan.len = *lens & 0x3ff;
-      red_chan.ptr = red_chan.buffer[bufnum];
-
-      flash_copy_data_blocking(red_chan.ptr + 2, red_chan.len);
-
-      red_chan.ptr[red_chan.len + 2] = 0;
-      red_chan.len += 3;
-
-      green_chan.ptr = blue_chan.ptr = red_chan.ptr;
-      green_chan.len = blue_chan.len = red_chan.len;
-    }
-    else
     {
       const uint32_t offset = 2;
-      red_chan.len = (*lens & 0x3ff);
-      green_chan.len = ((*lens >> 10) & 0x3ff);
-      blue_chan.len = (*lens >> 20);
+
       for (int i = 0; i < 3; ++i)
       {
         channel[i].ptr = channel[i].buffer[bufnum];
-        flash_copy_data_blocking(channel[i].ptr + offset, channel[i].len);
+        read_line(i, offset);
+
         channel[i].ptr[channel[i].len + offset] = 0;
         channel[i].len += offset + 1;
       }
@@ -268,7 +306,7 @@ void __time_critical_func(display_loop)()
   setup_dma_channels();
 
 #ifndef IMAGE_IN_RAM
-  flash_set_stream(image_dat, image_dat_len);
+  decomp_set_stream(image_dat, image_dat_len, false);
 #endif
 
 #if 1
@@ -292,7 +330,8 @@ void __time_critical_func(display_loop)()
           data_pos = image_dat;
           display_row = 0;
           image_row = 0;
-          flash_reset_stream();
+          decomp_reset_stream();
+          read_compression_tables();
           setup_next_line_ptr_and_len();
           
           irq_set_enabled(DMA_IRQ_0, false);

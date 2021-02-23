@@ -148,7 +148,7 @@ void __time_critical_func(flash_reset_stream)()
 #endif
 }
 
-void flash_set_stream(uint32_t* data, uint32_t len)
+void flash_set_stream(uint32_t* data, uint32_t len, bool start)
 {
   // Remember where we are transferring from
   flash_source_data_ptr = data;
