@@ -1,11 +1,11 @@
 #include "pico/stdlib.h"
 #include "flash.h"
 
-static uint8_t* compressed_data_ptr;
-static uint8_t* compressed_data_end;
+static uint32_t* compressed_data_ptr;
+static uint32_t* compressed_data_end;
 static uint32_t compressed_bits;
-static uint8_t compressed_bit_len;
-uint32_t compressed_bits_read;
+static int32_t compressed_bit_len;
+int32_t compressed_bits_read;
 
 void decomp_reset_stream()
 {
@@ -29,31 +29,40 @@ static void read_more_data()
 {
   uint32_t* new_data;
   uint32_t words_read = 0;
-  while (!words_read) words_read = flash_get_data(128, &new_data);
-  compressed_data_ptr = (uint8_t*)new_data;
-  compressed_data_end = (uint8_t*)(new_data + words_read);
+  while (!words_read) words_read = flash_get_data(512, &new_data);
+  compressed_data_ptr = new_data;
+  compressed_data_end = new_data + words_read;
 }
 
 // Read out bits.
-uint32_t decomp_get_bits(uint8_t bit_len)
+//uint32_t decomp_get_bits(int32_t bit_len)
+inline static uint32_t __attribute__((always_inline)) decomp_get_bits(int32_t bit_len)
 {
-  while (compressed_bit_len < bit_len)
+  compressed_bits_read += bit_len;
+
+  if (compressed_bit_len < bit_len)
   {
     if (compressed_data_ptr == compressed_data_end)
     {
       read_more_data();
     }
-    compressed_bits <<= 8;
-    compressed_bits |= *compressed_data_ptr++;
-    compressed_bit_len += 8;
+
+    int32_t need_bits = bit_len - compressed_bit_len;
+    uint32_t result = compressed_bits << need_bits;
+    compressed_bits = *compressed_data_ptr++;
+    compressed_bit_len = 32 - need_bits;
+    result |= compressed_bits >> compressed_bit_len;
+    compressed_bits &= ((~0u) >> need_bits);
+
+    return result;
   }
-
-  compressed_bit_len -= bit_len;
-  compressed_bits_read += bit_len;
-
-  uint32_t result = compressed_bits >> compressed_bit_len;
-  compressed_bits &= (1u << compressed_bit_len) - 1;
-  return result;
+  else
+  {
+    compressed_bit_len -= bit_len;
+    uint32_t result = compressed_bits >> compressed_bit_len;
+    compressed_bits &= (1u << compressed_bit_len) - 1;
+    return result;
+  }
 }
 
 // Read out a symbol table
@@ -67,7 +76,8 @@ void decomp_read_table(uint16_t dst_table[SYMBOLS_IN_TABLE])
 }
 
 // Read out a single 10-bit symbol using the given table for decode
-uint32_t decomp_get_symbol(uint16_t* table)
+inline static uint32_t __attribute__((always_inline)) decomp_get_symbol(uint16_t* table)
+//uint32_t decomp_get_symbol(uint16_t* table)
 {
   if (decomp_get_bits(1))
   {

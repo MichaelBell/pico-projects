@@ -165,7 +165,7 @@ void vga_entry() {
     // and the shared PIO bus connection can get very busy with pixel data traffic
     bus_ctrl_hw->priority = BUSCTRL_BUS_PRIORITY_PROC1_BITS;
 
-    flash_init();
+    flash_init(true);
 
     uint offset = pio_add_program(vga_pio, &vga_channel_program);
     assert(offset == 0);

@@ -17,7 +17,9 @@ pico_sdk_init()
 
 # Add executable. Default name is the project name, version 0.1
 
-add_executable(VGATest VGATest.c logic_analyser.c image.c flash.c)
+add_executable(VGATest VGATest.c logic_analyser.c image.c flash.c )
+
+set_source_files_properties(image.c PROPERTIES COMPILE_FLAGS -O3)
 
 pico_set_program_name(VGATest "VGATest")
 pico_set_program_version(VGATest "0.1")

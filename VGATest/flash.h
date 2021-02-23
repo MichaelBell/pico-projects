@@ -2,7 +2,7 @@
 // You may use this under the terms of the BSD 3 clause license.
 
 // Configure the flash streaming resources
-void flash_init();
+void flash_init(bool byte_swap);
 
 // Set the data to stream and optionally start streaming.
 // If start_streaming is false then start the stream by calling reset_stream.

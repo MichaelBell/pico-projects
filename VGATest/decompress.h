@@ -10,7 +10,7 @@ void decomp_set_stream(uint32_t* data, uint32_t len, bool start_streaming);
 void decomp_read_table(uint16_t dst_table[SYMBOLS_IN_TABLE]);
 
 // Read out bits.
-uint32_t decomp_get_bits(uint8_t bit_len);
+uint32_t decomp_get_bits(int32_t bit_len);
 
 // Read out a single 10-bit symbol using the given table for decode
 uint16_t decomp_get_symbol(uint16_t* table);

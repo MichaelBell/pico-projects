@@ -157,7 +157,7 @@ void flash_set_stream(uint32_t* data, uint32_t len, bool start)
   flash_reset_stream();
 }
 
-void flash_init()
+void flash_init(bool byte_swap)
 {
   // Setup the DMA channel
   dma_channel_config c = dma_channel_get_default_config(flash_dma_chan);
@@ -165,7 +165,7 @@ void flash_init()
   channel_config_set_read_increment(&c, false);
   channel_config_set_write_increment(&c, true);
   channel_config_set_ring(&c, true, FLASH_BUF_LOG_SIZE_BYTES);
-  channel_config_set_bswap(&c, true);
+  channel_config_set_bswap(&c, !byte_swap);  // Note data comes in byte swapped, so we reverse the request.
 
 #ifdef USE_SSI_DMA
   channel_config_set_dreq(&c, DREQ_XIP_SSIRX);

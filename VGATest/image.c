@@ -9,7 +9,7 @@
 #include "hardware/irq.h"
 
 #include "vga.h"
-#include "decompress.h"
+#include "decompress.c"
 
 //#include "feeding_duck320.h"
 //#include "perseverance.h"
@@ -92,6 +92,8 @@ static void read_line(uint32_t channel_idx, uint32_t offset)
 
   uint32_t* cmd_ptr = channel[channel_idx].ptr + offset;
   channel[channel_idx].len = 0;
+  uint16_t* pixel_table = channel[channel_idx].symbol_table[PIXEL_SYMBOLS_IDX];
+  uint16_t* rle_table = channel[channel_idx].symbol_table[RLE_SYMBOLS_IDX];
 
   len += compressed_bits_read;
   
@@ -103,21 +105,25 @@ static void read_line(uint32_t channel_idx, uint32_t offset)
     if (cmd_type)
     {
       cmd = 0xC0000000u;
-      table = channel[channel_idx].symbol_table[PIXEL_SYMBOLS_IDX];
+      cmd |= decomp_get_symbol(pixel_table) << 20;
+      cmd |= decomp_get_symbol(pixel_table) << 10;
+      cmd |= decomp_get_symbol(pixel_table);
     }
     else
     {
       cmd = 0x40000000u;
-      table = channel[channel_idx].symbol_table[RLE_SYMBOLS_IDX];
+      cmd |= decomp_get_symbol(rle_table) << 20;
+      cmd |= decomp_get_symbol(rle_table) << 10;
+      cmd |= decomp_get_symbol(rle_table);
     }
 
-    cmd |= decomp_get_symbol(table) << 20;
-    cmd |= decomp_get_symbol(table) << 10;
-    cmd |= decomp_get_symbol(table);
     *cmd_ptr++ = cmd;
   }
   assert(compressed_bits_read == len);
-  channel[channel_idx].len = cmd_ptr - (channel[channel_idx].ptr + offset);
+
+  *cmd_ptr++ = 0;
+  channel[channel_idx].len = cmd_ptr - channel[channel_idx].ptr;
+  assert(channel[channel_idx].len < MAX_CMD_LINE_LEN);
 
   if (channel_idx == 2)
   {
@@ -190,7 +196,7 @@ static void __time_critical_func(setup_next_line_ptr_and_len)()
     }
   }
 
-  else if (image_row < IMAGE_ROWS && (display_row & 0xf) == 0) //display_row < DISPLAY_ROWS - 100)
+  else if (image_row < IMAGE_ROWS && (display_row & 3) == 0) //display_row < DISPLAY_ROWS - 100)
   {
     bufnum ^= 1;
     ++image_row;
@@ -202,9 +208,6 @@ static void __time_critical_func(setup_next_line_ptr_and_len)()
       {
         channel[i].ptr = channel[i].buffer[bufnum];
         read_line(i, offset);
-
-        channel[i].ptr[channel[i].len + offset] = 0;
-        channel[i].len += offset + 1;
       }
     }
     assert(data_pos <= image_dat + image_dat_len);
@@ -330,14 +333,17 @@ void __time_critical_func(display_loop)()
           data_pos = image_dat;
           display_row = 0;
           image_row = 0;
+
+          irq_set_enabled(DMA_IRQ_0, false);
+
           decomp_reset_stream();
           read_compression_tables();
           setup_next_line_ptr_and_len();
           
-          irq_set_enabled(DMA_IRQ_0, false);
           dma_hw->ints0 = vga_dma_channel_mask;
           complete_dma_channel_bits = 0;
           transfer_next_line();
+
           irq_set_enabled(DMA_IRQ_0, true);
 
           break;
