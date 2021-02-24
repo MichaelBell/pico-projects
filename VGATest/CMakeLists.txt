@@ -36,6 +36,7 @@ target_link_libraries(VGATest pico_stdlib pico_multicore)
 target_link_libraries(VGATest
         hardware_dma
         hardware_pio
+        hardware_interp
         )
 
 pico_add_extra_outputs(VGATest)

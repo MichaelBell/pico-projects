@@ -10,7 +10,7 @@
 #include "hardware/interp.h"
 
 #include "vga.h"
-#include "decompress.c"
+#include "flash.h"
 
 //#include "feeding_duck320.h"
 //#include "perseverance.h"
@@ -38,6 +38,7 @@ static uint32_t* data_pos;
 
 #define MAX_CMD_LINE_LEN (((DISPLAY_COLS + 5) / 6) + 1)
 
+#define SYMBOLS_IN_TABLE 64
 #define PIXEL_SYMBOLS_IDX 0
 #define RLE_SYMBOLS_IDX 1
 
@@ -76,92 +77,145 @@ const uint32_t white_line[] = {
   WHITE99, WHITE99, WHITE99, WHITE99, WHITE99, WHITE99, WHITE92, 0
 };
 
+static uint32_t compressed_bits;
+static int32_t compressed_bit_len;
+
+// Read bits from flash ringbuffer.
+inline static uint32_t __attribute__((always_inline)) get_bits(int32_t bit_len)
+{
+  interp1->add_raw[0] = bit_len;
+
+  if (compressed_bit_len < bit_len)
+  {
+    int32_t need_bits = bit_len - compressed_bit_len;
+    uint32_t result = compressed_bits << need_bits;
+    compressed_bits = *(uint32_t*)interp1->peek[0];
+    compressed_bit_len = 32 - need_bits;
+    result |= compressed_bits >> compressed_bit_len;
+    compressed_bits &= ((~0u) >> need_bits);
+
+    return result;
+  }
+  else
+  {
+    compressed_bit_len -= bit_len;
+    uint32_t result = compressed_bits >> compressed_bit_len;
+    compressed_bits &= (1u << compressed_bit_len) - 1;
+    return result;
+  }
+}
+
 static void read_compression_tables()
 {
+  compressed_bits = 0;
+  compressed_bit_len = 0;
+
   for (int i = 0; i < 3; ++i)
   {
     for (int j = 0; j < 2; ++j)
     {
-      decomp_read_table(channel[i].symbol_table[j]);
+      interp1->accum[0] = flash_get_data_in_ringbuffer_blocking((SYMBOLS_IN_TABLE * 10) / 32) << 5;
+
+      for (int k = 0; k < SYMBOLS_IN_TABLE; ++k)
+        channel[i].symbol_table[j][k] = get_bits(10);
+      
+      flash_release_ringbuffer();
     }
   }
 }
 
-static void read_line(uint32_t channel_idx, uint32_t offset)
+static void read_lines(uint32_t offset)
 {
-  uint32_t len = decomp_get_bits(13);
+  interp1->accum[0] = flash_get_data_in_ringbuffer_blocking(1) << 5;
+  compressed_bits = 0;
+  compressed_bit_len = 0;
 
-  uint32_t* cmd_ptr = channel[channel_idx].ptr + offset;
-  channel[channel_idx].len = 0;
-  uint16_t* pixel_table = channel[channel_idx].symbol_table[PIXEL_SYMBOLS_IDX];
-  uint16_t* rle_table = channel[channel_idx].symbol_table[RLE_SYMBOLS_IDX];
-
-  len += compressed_bits_read;
-  
-  uint32_t bits = 0;
-  int32_t bits_to_get = 32;
-  while (compressed_bits_read < len)
+  for (int channel_idx = 0; channel_idx < 3; ++channel_idx)
   {
-    uint32_t cmd;
-    uint16_t* table;
-    bits |= decomp_get_bits(bits_to_get);
-    if (bits & (1u << 30))
+    uint32_t len = get_bits(13);
+
+    uint32_t cur_bit_idx = interp1->accum[0];
+
+    // Fetch enough data.  This is a bit of a mess but the compiler should sort it out.
+    uint32_t bits_left_in_cur_word = 32 - (cur_bit_idx & 0x1f);
+    if (bits_left_in_cur_word == 32) bits_left_in_cur_word = 0;
+    flash_get_data_in_ringbuffer_blocking((len - bits_left_in_cur_word + 31) / 32);
+    
+    // End of channel when accum[0] == len.
+    len += cur_bit_idx;
+
+    uint32_t* cmd_ptr = channel[channel_idx].ptr + offset;
+    uint16_t* pixel_table = channel[channel_idx].symbol_table[PIXEL_SYMBOLS_IDX];
+    uint16_t* rle_table = channel[channel_idx].symbol_table[RLE_SYMBOLS_IDX];
+
+    uint32_t bits = 0;
+    int32_t bits_to_get = 32;
+    while (interp1->accum[0] < len)
     {
-      cmd = bits;
-      bits = 0;
-      bits_to_get = 32;
-    }
-    else
-    {
-#if 0
-      if (bits & (1u << 31))
+      uint32_t cmd;
+      uint16_t* table;
+      bits |= get_bits(bits_to_get);
+      if (bits & (1u << 30))
       {
-        cmd = 0xC0000000u;
-        cmd |= pixel_table[(bits >> 24) & 0x3f] << 20;
-        cmd |= pixel_table[(bits >> 18) & 0x3f] << 10;
-        cmd |= pixel_table[(bits >> 12) & 0x3f];
+        cmd = bits;
+        bits = 0;
+        bits_to_get = 32;
       }
       else
       {
-        cmd = 0x40000000u;
-        cmd |= rle_table[(bits >> 24) & 0x3f] << 20;
-        cmd |= rle_table[(bits >> 18) & 0x3f] << 10;
-        cmd |= rle_table[(bits >> 12) & 0x3f];
+  #if 0
+        if (bits & (1u << 31))
+        {
+          cmd = 0xC0000000u;
+          cmd |= pixel_table[(bits >> 24) & 0x3f] << 20;
+          cmd |= pixel_table[(bits >> 18) & 0x3f] << 10;
+          cmd |= pixel_table[(bits >> 12) & 0x3f];
+        }
+        else
+        {
+          cmd = 0x40000000u;
+          cmd |= rle_table[(bits >> 24) & 0x3f] << 20;
+          cmd |= rle_table[(bits >> 18) & 0x3f] << 10;
+          cmd |= rle_table[(bits >> 12) & 0x3f];
+        }
+  #else
+        interp0->accum[1] = bits;
+        if (bits & (1u << 31))
+        {
+          cmd = 0xC0000000u;
+          interp0->base[0] = (uintptr_t)pixel_table;
+        }
+        else
+        {
+          cmd = 0x40000000u;
+          interp0->base[0] = (uintptr_t)rle_table;
+        }
+        cmd |= *(uint16_t*)interp0->pop[0];
+        cmd |= (uint32_t)(*(uint16_t*)interp0->pop[0]) << 10;
+        cmd |= (uint32_t)(*(uint16_t*)interp0->pop[0]) << 20;
+  #endif
+        bits <<= 20;
+        bits_to_get = 20;
       }
-#else
-      interp0->accum[1] = bits;
-      if (bits & (1u << 31))
-      {
-        cmd = 0xC0000000u;
-        interp0->base[0] = (uintptr_t)pixel_table;
-      }
-      else
-      {
-        cmd = 0x40000000u;
-        interp0->base[0] = (uintptr_t)rle_table;
-      }
-      cmd |= *(uint16_t*)interp0->pop[0];
-      cmd |= (uint32_t)(*(uint16_t*)interp0->pop[0]) << 10;
-      cmd |= (uint32_t)(*(uint16_t*)interp0->pop[0]) << 20;
-#endif
-      bits <<= 20;
-      bits_to_get = 20;
+
+      *cmd_ptr++ = cmd;
     }
+    assert(interp1->accum[0] == len);
 
-    *cmd_ptr++ = cmd;
+    *cmd_ptr++ = 0;
+    channel[channel_idx].len = cmd_ptr - channel[channel_idx].ptr;
+    assert(channel[channel_idx].len < MAX_CMD_LINE_LEN);
+
+    if (channel_idx != 2)
+    {
+      // Ensure we have enough bits to read the length.
+      uint32_t bits_left_in_cur_word = 32 - (interp1->accum[0] & 0x1f);
+      if (bits_left_in_cur_word == 32) bits_left_in_cur_word = 0;
+      if (bits_left_in_cur_word < 13) flash_get_data_in_ringbuffer_blocking(1);
+    }
   }
-  assert(compressed_bits_read == len);
 
-  *cmd_ptr++ = 0;
-  channel[channel_idx].len = cmd_ptr - channel[channel_idx].ptr;
-  assert(channel[channel_idx].len < MAX_CMD_LINE_LEN);
-
-  if (channel_idx == 2)
-  {
-    // Align to 32-bit word.
-    if (compressed_bits_read & 0x1f)
-      decomp_get_bits(32 - (compressed_bits_read & 0x1f));
-  }
+  flash_release_ringbuffer();
 }
 
 #ifdef IMAGE_IN_RAM
@@ -238,8 +292,8 @@ static void __time_critical_func(setup_next_line_ptr_and_len)()
       for (int i = 0; i < 3; ++i)
       {
         channel[i].ptr = channel[i].buffer[bufnum];
-        read_line(i, offset);
       }
+      read_lines(offset);
     }
     assert(data_pos <= image_dat + image_dat_len);
   }
@@ -337,7 +391,7 @@ static void setup_dma_channels()
 
 void setup_interpolators()
 {
-  // This is for decoding compressed data.
+  // interp0 is for decoding compressed data.
   // At start there are 3 6-bit indices in bits 30-12.  
   // The table holds 16-bit symbols.
   // Lane 1 accumulator is set with the original bits.
@@ -355,6 +409,19 @@ void setup_interpolators()
   interp_config_set_shift(&cfg, 6);
   interp_set_config(interp0, 1, &cfg);
   interp0->base[1] = 0;
+
+  // interp1 is for reading bit data from the flash ringbuffer.
+  // base0 is set to the ringbuffer pointer.  When reading bits,
+  // put the flash ring buffer index << 5 into accum0, then before
+  // reading each bit string add the number of bits directly to the accumulator.
+  // If you need to read another word to complete the bit field
+  // peek0 will give the address to read from.
+  cfg = interp_default_config();
+  interp_config_set_shift(&cfg, 3);
+  interp_config_set_mask(&cfg, 2, FLASH_BUF_LOG_SIZE_BYTES - 1);
+  interp_set_config(interp1, 0, &cfg);
+
+  interp1->base[0] = (uintptr_t)flash_buffer;
 }
 
 void __time_critical_func(display_loop)() 
@@ -363,7 +430,7 @@ void __time_critical_func(display_loop)()
   setup_interpolators();
 
 #ifndef IMAGE_IN_RAM
-  decomp_set_stream(image_dat, image_dat_len, false);
+  flash_set_stream(image_dat, image_dat_len, false);
 #endif
 
 #if 1
@@ -390,7 +457,7 @@ void __time_critical_func(display_loop)()
 
           irq_set_enabled(DMA_IRQ_0, false);
 
-          decomp_reset_stream();
+          flash_reset_stream();
           read_compression_tables();
           setup_next_line_ptr_and_len();
           

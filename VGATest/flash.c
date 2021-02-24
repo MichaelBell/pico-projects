@@ -10,6 +10,8 @@
 #include "hardware/regs/ssi.h"
 #include "pico/sync.h"
 
+#include "flash.h"
+
 #if defined(PICO_COPY_TO_RAM) && PICO_COPY_TO_RAM
 #define USE_SSI_DMA
 #endif
@@ -20,10 +22,7 @@
 #define FLASH_MIN_TRANSFER 4
 #endif
 
-#define FLASH_BUF_LOG_SIZE_BYTES 13
-#define FLASH_BUF_LEN_WORDS (1 << (FLASH_BUF_LOG_SIZE_BYTES - 2))
-#define FLASH_BUF_IDX_MASK  (FLASH_BUF_LEN_WORDS - 1)
-static uint32_t flash_buffer[FLASH_BUF_LEN_WORDS] __attribute__((aligned(1 << FLASH_BUF_LOG_SIZE_BYTES)));
+uint32_t flash_buffer[FLASH_BUF_LEN_WORDS] __attribute__((aligned(1 << FLASH_BUF_LOG_SIZE_BYTES)));
 
 // Location in buffer that was returned to the user on last read
 // We should write past here.
@@ -41,10 +40,6 @@ static uint32_t* flash_target_write_addr;
 // Source data in flash
 static uint32_t* flash_source_data_ptr;
 static uint32_t flash_source_data_len;
-
-// Note this is in the range of channels that the SD card uses
-// Currently assuming we'll use either SD or flash.
-#define flash_dma_chan 11
 
 // Start streaming more bytes from flash if there is space in the buffer
 static void __no_inline_not_in_flash_func(flash_transfer)()
@@ -259,5 +254,37 @@ void __not_in_flash_func(flash_copy_data_blocking)(uint32_t* dst_ptr, uint32_t l
     memcpy(write_ptr, data_ptr, words_read * sizeof(uint32_t));
     write_ptr += words_read;
     words_to_read -= words_read;
+  }
+}
+
+uint32_t __not_in_flash_func(flash_get_data_in_ringbuffer_blocking)(uint32_t len_req)
+{
+  assert(len_req <= FLASH_BUF_LEN_WORDS / 2);
+  assert(len_req > 0);
+
+  uint32_t words_available = ((uint32_t*)dma_hw->ch[flash_dma_chan].write_addr - flash_buffer_ptr) & FLASH_BUF_IDX_MASK;
+  while (words_available < len_req) {
+    words_available = ((uint32_t*)dma_hw->ch[flash_dma_chan].write_addr - flash_buffer_ptr) & FLASH_BUF_IDX_MASK;
+  }
+
+  uint32_t idx_out = flash_buffer_ptr - flash_buffer;
+  uint32_t new_idx = (idx_out + len_req) & FLASH_BUF_IDX_MASK;
+  flash_buffer_ptr = flash_buffer + new_idx;
+
+  return idx_out;
+}
+
+void __not_in_flash_func(flash_release_ringbuffer)()
+{
+  assert(flash_prev_buffer_ptr != flash_buffer_ptr);
+
+  // Set prev pointer to one less than buffer pointer as buffer pointer must always be
+  // one ahead of write pointer to prevent lock up.
+  flash_prev_buffer_ptr = flash_buffer + (((flash_buffer_ptr - flash_buffer) - 1) & FLASH_BUF_IDX_MASK);
+
+  // Check whether we should now restart the transfer
+  if (!dma_channel_is_busy(flash_dma_chan))
+  {
+    flash_transfer();
   }
 }
