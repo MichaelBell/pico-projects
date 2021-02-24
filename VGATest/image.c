@@ -97,24 +97,37 @@ static void read_line(uint32_t channel_idx, uint32_t offset)
 
   len += compressed_bits_read;
   
+  uint32_t bits = 0;
+  int32_t bits_to_get = 32;
   while (compressed_bits_read < len)
   {
-    uint32_t cmd_type = decomp_get_bits(1);
     uint32_t cmd;
     uint16_t* table;
-    if (cmd_type)
+    bits |= decomp_get_bits(bits_to_get);
+    if (bits & (1u << 30))
     {
-      cmd = 0xC0000000u;
-      cmd |= decomp_get_symbol(pixel_table) << 20;
-      cmd |= decomp_get_symbol(pixel_table) << 10;
-      cmd |= decomp_get_symbol(pixel_table);
+      cmd = bits;
+      bits = 0;
+      bits_to_get = 32;
     }
     else
     {
-      cmd = 0x40000000u;
-      cmd |= decomp_get_symbol(rle_table) << 20;
-      cmd |= decomp_get_symbol(rle_table) << 10;
-      cmd |= decomp_get_symbol(rle_table);
+      if (bits & (1u << 31))
+      {
+        cmd = 0xC0000000u;
+        cmd |= pixel_table[(bits >> 24) & 0x3f] << 20;
+        cmd |= pixel_table[(bits >> 18) & 0x3f] << 10;
+        cmd |= pixel_table[(bits >> 12) & 0x3f];
+      }
+      else
+      {
+        cmd = 0x40000000u;
+        cmd |= rle_table[(bits >> 24) & 0x3f] << 20;
+        cmd |= rle_table[(bits >> 18) & 0x3f] << 10;
+        cmd |= rle_table[(bits >> 12) & 0x3f];
+      }
+      bits <<= 20;
+      bits_to_get = 20;
     }
 
     *cmd_ptr++ = cmd;
@@ -196,7 +209,7 @@ static void __time_critical_func(setup_next_line_ptr_and_len)()
     }
   }
 
-  else if (image_row < IMAGE_ROWS && (display_row & 3) == 0) //display_row < DISPLAY_ROWS - 100)
+  else if (image_row < IMAGE_ROWS) // && (display_row & 1) == 0) //display_row < DISPLAY_ROWS - 100)
   {
     bufnum ^= 1;
     ++image_row;
