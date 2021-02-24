@@ -7,6 +7,7 @@
 #include "hardware/sync.h"
 #include "hardware/pio.h"
 #include "hardware/irq.h"
+#include "hardware/interp.h"
 
 #include "vga.h"
 #include "decompress.c"
@@ -112,6 +113,7 @@ static void read_line(uint32_t channel_idx, uint32_t offset)
     }
     else
     {
+#if 0
       if (bits & (1u << 31))
       {
         cmd = 0xC0000000u;
@@ -126,6 +128,22 @@ static void read_line(uint32_t channel_idx, uint32_t offset)
         cmd |= rle_table[(bits >> 18) & 0x3f] << 10;
         cmd |= rle_table[(bits >> 12) & 0x3f];
       }
+#else
+      interp0->accum[1] = bits;
+      if (bits & (1u << 31))
+      {
+        cmd = 0xC0000000u;
+        interp0->base[0] = (uintptr_t)pixel_table;
+      }
+      else
+      {
+        cmd = 0x40000000u;
+        interp0->base[0] = (uintptr_t)rle_table;
+      }
+      cmd |= *(uint16_t*)interp0->pop[0];
+      cmd |= (uint32_t)(*(uint16_t*)interp0->pop[0]) << 10;
+      cmd |= (uint32_t)(*(uint16_t*)interp0->pop[0]) << 20;
+#endif
       bits <<= 20;
       bits_to_get = 20;
     }
@@ -317,9 +335,32 @@ static void setup_dma_channels()
     dma_hw->inte0 = vga_dma_channel_mask;
 }
 
+void setup_interpolators()
+{
+  // This is for decoding compressed data.
+  // At start there are 3 6-bit indices in bits 30-12.  
+  // The table holds 16-bit symbols.
+  // Lane 1 accumulator is set with the original bits.
+  // Lane 0 base is set with the table address.
+  // Lane 1 shifts the bits right 6 bits every pop and stores back into acc 1.
+  // Lane 0 reads the acc 1, shifts right 11 bits and masks.
+  // Result of lane 0 is the memory location for the symbol.
+  interp_config cfg = interp_default_config();
+  interp_config_set_shift(&cfg, 11);
+  interp_config_set_mask(&cfg, 1, 6);
+  interp_config_set_cross_input(&cfg, true);
+  interp_set_config(interp0, 0, &cfg);
+
+  cfg = interp_default_config();
+  interp_config_set_shift(&cfg, 6);
+  interp_set_config(interp0, 1, &cfg);
+  interp0->base[1] = 0;
+}
+
 void __time_critical_func(display_loop)() 
 {
   setup_dma_channels();
+  setup_interpolators();
 
 #ifndef IMAGE_IN_RAM
   decomp_set_stream(image_dat, image_dat_len, false);
