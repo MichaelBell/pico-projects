@@ -194,6 +194,7 @@ static void read_lines(uint32_t offset)
         cmd |= (uint32_t)(*(uint16_t*)interp0->pop[0]) << 10;
         cmd |= (uint32_t)(*(uint16_t*)interp0->pop[0]) << 20;
 #else
+#if 1
         asm ("ldr r6, [%[itp0], #20]\n\t"
              "ldrh r1, [r6, #0]\n\t"
              "orrs %[cmd], r1\n\t"
@@ -205,9 +206,31 @@ static void read_lines(uint32_t offset)
              "ldrh r1, [r6, #0]\n\t"
              "lsls r1, #20\n\t"
              "orrs %[cmd], r1" :
-              [cmd] "+r" (cmd) :
-              [itp0] "r" (interp0) :
-              "r1", "r6");
+              [cmd] "+l" (cmd) :
+              [itp0] "l" (interp0) :
+              "r1", "r6", "cc");
+#else
+        // Bizarrely this results in worse assembler output because
+        // the compiler decides to use registers it needs to save!!
+        {
+          uint32_t t1, t2;
+          asm ("ldr %[t1], [%[itp0], #20]\n\t"
+              "ldrh %[t2], [%[t1], #0]\n\t"
+              "orrs %[cmd], %[t2]\n\t"
+              "ldr %[t1], [%[itp0], #20]\n\t"
+              "ldrh %[t2], [%[t1], #0]\n\t"
+              "lsls %[t2], #10\n\t"
+              "orrs %[cmd], %[t2]\n\t"
+              "ldr %[t1], [%[itp0], #20]\n\t"
+              "ldrh %[t2], [%[t1], #0]\n\t"
+              "lsls %[t2], #20\n\t"
+              "orrs %[cmd], %[t2]" :
+                [cmd] "+l" (cmd),
+                [t1] "=&l" (t1), [t2] "=&l" (t2)  :
+                [itp0] "l" (interp0) :
+                "cc");
+        }
+#endif
 #endif
 
         *cmd_ptr++ = cmd;
