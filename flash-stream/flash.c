@@ -106,7 +106,7 @@ void __time_critical_func(flash_reset_stream)()
   if (dma_channel_is_busy(flash_dma_chan)) {
 #ifdef USE_SSI_DMA
     // TODO: Investigate if abort is possible.
-    while (dma_channel_is_busy);
+    while (dma_channel_is_busy(flash_dma_chan));
 #else
     dma_channel_abort(flash_dma_chan);
     xip_ctrl_hw->stream_ctr = 0;
