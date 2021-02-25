@@ -105,6 +105,22 @@ inline static uint32_t __attribute__((always_inline)) get_bits(int32_t bit_len)
   }
 }
 
+inline static uint32_t __attribute__((always_inline)) get_32_bits()
+{
+  interp1->add_raw[0] = 32;
+
+  int32_t need_bits = 32 - compressed_bit_len;
+  uint32_t result = compressed_bits << need_bits;
+  compressed_bits = *(uint32_t*)interp1->peek[0];
+  result |= compressed_bits >> compressed_bit_len;
+  
+  // Could maybe get rid of this and put the burden on the next reader
+  // Would save cycles on back to back 32-bit reads.
+  compressed_bits &= ((~0u) >> need_bits);
+
+  return result;
+}
+
 static void read_compression_tables()
 {
   compressed_bits = 0;
@@ -148,37 +164,18 @@ static void read_lines(uint32_t offset)
     uint16_t* pixel_table = channel[channel_idx].symbol_table[PIXEL_SYMBOLS_IDX];
     uint16_t* rle_table = channel[channel_idx].symbol_table[RLE_SYMBOLS_IDX];
 
-    uint32_t bits = 0;
-    int32_t bits_to_get = 32;
-    while (interp1->accum[0] < len)
+    uint32_t bits = get_32_bits();
+    while (true)
     {
-      uint32_t cmd;
-      uint16_t* table;
-      bits |= get_bits(bits_to_get);
       if (bits & (1u << 30))
       {
-        cmd = bits;
-        bits = 0;
-        bits_to_get = 32;
+        *cmd_ptr++ = bits;
+        if (interp1->accum[0] >= len) break;
+        bits = get_32_bits();
       }
       else
       {
-  #if 0
-        if (bits & (1u << 31))
-        {
-          cmd = 0xC0000000u;
-          cmd |= pixel_table[(bits >> 24) & 0x3f] << 20;
-          cmd |= pixel_table[(bits >> 18) & 0x3f] << 10;
-          cmd |= pixel_table[(bits >> 12) & 0x3f];
-        }
-        else
-        {
-          cmd = 0x40000000u;
-          cmd |= rle_table[(bits >> 24) & 0x3f] << 20;
-          cmd |= rle_table[(bits >> 18) & 0x3f] << 10;
-          cmd |= rle_table[(bits >> 12) & 0x3f];
-        }
-  #else
+        uint32_t cmd;
         interp0->accum[1] = bits;
         if (bits & (1u << 31))
         {
@@ -190,15 +187,34 @@ static void read_lines(uint32_t offset)
           cmd = 0x40000000u;
           interp0->base[0] = (uintptr_t)rle_table;
         }
+
+#if 0
+        // The compiler makes a right mess of this!
         cmd |= *(uint16_t*)interp0->pop[0];
         cmd |= (uint32_t)(*(uint16_t*)interp0->pop[0]) << 10;
         cmd |= (uint32_t)(*(uint16_t*)interp0->pop[0]) << 20;
-  #endif
-        bits <<= 20;
-        bits_to_get = 20;
-      }
+#else
+        asm ("ldr r6, [%[itp0], #20]\n\t"
+             "ldrh r1, [r6, #0]\n\t"
+             "orrs %[cmd], r1\n\t"
+             "ldr r6, [%[itp0], #20]\n\t"
+             "ldrh r1, [r6, #0]\n\t"
+             "lsls r1, #10\n\t"
+             "orrs %[cmd], r1\n\t"
+             "ldr r6, [%[itp0], #20]\n\t"
+             "ldrh r1, [r6, #0]\n\t"
+             "lsls r1, #20\n\t"
+             "orrs %[cmd], r1" :
+              [cmd] "+r" (cmd) :
+              [itp0] "r" (interp0) :
+              "r1", "r6");
+#endif
 
-      *cmd_ptr++ = cmd;
+        *cmd_ptr++ = cmd;
+
+        // A compressed entry is not allowed to be the end of the line.
+        bits = (bits << 20) | get_bits(20);
+      }
     }
     assert(interp1->accum[0] == len);
 
