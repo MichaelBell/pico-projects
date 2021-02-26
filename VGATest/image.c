@@ -140,6 +140,152 @@ static void read_compression_tables()
   }
 }
 
+inline static uint32_t* run_asm_loop(uint32_t* cmd_ptr, uint16_t* pixel_table, uint16_t* rle_table)
+{
+#if 0
+  uint32_t bits, cmd;
+    asm ( "movs r2, #32\n\t"            // interp1->add_raw[0] = 32;
+          "str r2, [%[itp0], #116]\n\t"
+          "subs r2, r2, %[cbl]\n\t"     // need_bits = 32 - compressed_bit_len;
+          "mov r1, %[cb]\n\t"
+          "lsls r1, r2\n\t"             // compressed_bits << need_bits
+          "ldr r3, [%[itp0], #96]\n\t"  // *(uint32_t*)interp1->peek[0];
+          "ldr r3, [r3, #0]\n\t"
+          "movs %[bits], r3\n\t"        // compressed_bits >> compressed_bit_len
+          "lsrs %[bits], %[cbl]\n\t"         
+          "orrs %[bits], r1\n\t"        // bits |= compressed_bits >> compressed_bit_len;
+          "lsls r3, r2\n\t"             // compressed_bits << need_bits
+      "1:  mov %[cb], r3\n\t"
+
+          // Begin main loop
+          "lsls r1, %[bits], #1\n\t"    // if (!(bits & (1u << 30)))
+          "cmp r1, #0\n\nt"
+          "blt.n 2f\n\t"
+
+          // Decompress case
+          "str %[bits], [%[itp0], #4]\n\t"  // interp0->accum[1] = bits;
+          "cmp %[bits], #0\n\t"         // if (!(bits & (1u << 31)))
+          "blt.n 3f\n\t"
+
+          // RLE case
+          "movs %[cmd], #4\n\t"
+          "ldr r1, %[rle_table]\n\t"
+      "5:  str rl, [%[itp0], #8]\n\t"  // interp->base[0] = table
+          "lsls %[cmd], #28\n\t"
+          "ldr r1, [%[itp0], #20]\n\t"   // Build command from table
+          "ldrh r1, [r1, #0]\n\t"
+          "orrs %[cmd], r1\n\t"
+          "ldr r1, [%[itp0], #20]\n\t"
+          "ldrh r1, [r1, #0]\n\t"
+          "lsls r1, #10\n\t"
+          "orrs %[cmd], r1\n\t"
+          "ldr r1, [%[itp0], #20]\n\t"
+          "ldrh r1, [r1, #0]\n\t"
+          "lsls r1, #20\n\t"
+          "orrs %[cmd], r1\n\t"
+          "stm %[cmdp]!, {%[cmd]}\n\t"
+
+          // Get 20 bits
+          "movs r2, #20\n\t"
+          "str r2, [%[itp0], #116]\n\t"
+          "mov r3, %[cb]\n\t"
+          "lsrs r3, #12\n\t"
+          "lsls %[bits], #20\n\t"   // bits = (bits << 20) | compressed_bits
+          "orrs %[bits], r3\n\t"
+          "subs %[cbl], %[cbl], r2\n\t"
+          "bge.n 4f\n\t"
+
+          "lsls r3, #20\n\t"
+          "b.n 1f\n\t"
+
+          // Normal case
+      "2:  stm %[cmdp]!, {%[bits]}\n\t"   // *cmd_ptr++ = bits;
+          "ldr r1, [%[itp0], #100]\n\t"  // interp1->peek[1]
+          "cmp r1, #0\n\t"
+          "bge.n 6f\n\t"                // >= 0: done
+          "movs r1, #32\n\t"
+          "str r1, [%[itp0], #116]\n\t"
+          "mov %[bits], %[cb]\n\t"
+          "ldr r3, [%[itp0], #96]\n\t" // *(uint32_t*)interp1->peek[0];
+          "ldr r3, [r3, #0]\n\t"
+          "movs r2, r3\n\t"
+          "lsrs r2, %[cbl]\n\t"
+          "orrs %[bits], r2\n\t"
+          "subs r1, r1, %[cbl]\n\t"
+          "lsls r3, r1\n\t"
+          "b.n 1f\n\t"
+          
+          // Pixel case
+      "3:  movs %[cmd], #12\n\t"
+          "ldr r1, %[rle_table]\n\t"
+          "b.n 5f\n\t"
+
+            // Get 20 bits, not enough bits
+      "4:  ldr r3, [%[itp0], #96]\n\t" // *(uint32_t*)interp1->peek[0];
+          "ldr r3, [r3, #0]\n\t"
+          "adds %[cbl], #32\n\t"       // compressed_bit_len = 32 - need_bits;
+          "movs r2, r3\n\t"
+          "lsrs r2, %[cbl]\n\t"
+          "orrs %[bits], r2\n\t"
+          "mov r1, #32\n\t"
+          "subs r1, r1, %[cbl]\n\t"
+          "lsls r3, r1\n\t"
+          "b.n 1f\n\t"
+
+          // Exit - restore cb to normal alignment
+      "6:  mov r1, #32\n\t"
+          "subs r1, r1, %[cbl]\n\t"
+          "mov r3, %[cb]\n\t"
+          "lsrs r3, r1\n\t"
+          "mov %[cb], r3\n\t" 
+      : [cmdp] "+l" (cmd_ptr)
+      : [itp0] "l" (interp0),
+        [cb] "r" (compressed_bits),
+        [cbl] "l" (compressed_bit_len),
+        [bits] "l" (bits),
+        [cmd] "l" (cmd),
+        [rle_table] "m" (rle_table),
+        [pixel_table] "m" (pixel_table)
+      : "r1", "r2", "r3", "cc" );
+#else
+    uint32_t bits = get_32_bits();
+    while (true)
+    {
+      if (bits & (1u << 30))
+      {
+        *cmd_ptr++ = bits;
+        if ((int32_t)interp1->peek[1] >= 0) break;
+        bits = get_32_bits();
+      }
+      else
+      {
+        uint32_t cmd;
+        interp0->accum[1] = bits;
+        if (bits & (1u << 31))
+        {
+          cmd = 0xC0000000u;
+          interp0->base[0] = (uintptr_t)pixel_table;
+        }
+        else
+        {
+          cmd = 0x40000000u;
+          interp0->base[0] = (uintptr_t)rle_table;
+        }
+
+        // The compiler makes a right mess of this!
+        cmd |= *(uint16_t*)interp0->pop[0];
+        cmd |= (uint32_t)(*(uint16_t*)interp0->pop[0]) << 10;
+        cmd |= (uint32_t)(*(uint16_t*)interp0->pop[0]) << 20;
+        *cmd_ptr++ = cmd;
+
+        // A compressed entry is not allowed to be the end of the line.
+        bits = (bits << 20) | get_bits(20);
+      }
+    }
+#endif
+  return cmd_ptr;
+}
+
 static void read_lines(uint32_t offset)
 {
   interp1->accum[0] = flash_get_data_in_ringbuffer_blocking(1) << 5;
@@ -159,18 +305,22 @@ static void read_lines(uint32_t offset)
     
     // End of channel when accum[0] == len.
     len += cur_bit_idx;
+    interp1->base[1] = -len;
 
     uint32_t* cmd_ptr = channel[channel_idx].ptr + offset;
     uint16_t* pixel_table = channel[channel_idx].symbol_table[PIXEL_SYMBOLS_IDX];
     uint16_t* rle_table = channel[channel_idx].symbol_table[RLE_SYMBOLS_IDX];
 
+#if 0
+    cmd_ptr = run_asm_loop(cmd_ptr, pixel_table, rle_table);
+#else
     uint32_t bits = get_32_bits();
     while (true)
     {
       if (bits & (1u << 30))
       {
         *cmd_ptr++ = bits;
-        if (interp1->accum[0] >= len) break;
+        if ((int32_t)interp1->peek[1] >= 0) break;
         bits = get_32_bits();
       }
       else
@@ -202,7 +352,7 @@ static void read_lines(uint32_t offset)
              "ldrh r1, [r6, #0]\n\t"
              "lsls r1, #10\n\t"
              "orrs %[cmd], r1\n\t"
-             "ldr r6, [%[itp0], #20]\n\t"
+             "ldr r6, [%[itp0], #20]\n\t" 
              "ldrh r1, [r6, #0]\n\t"
              "lsls r1, #20\n\t"
              "orrs %[cmd], r1" :
@@ -213,20 +363,20 @@ static void read_lines(uint32_t offset)
         // Bizarrely this results in worse assembler output because
         // the compiler decides to use registers it needs to save!!
         {
-          uint32_t t1, t2;
+          uint32_t t1;
           asm ("ldr %[t1], [%[itp0], #20]\n\t"
-              "ldrh %[t2], [%[t1], #0]\n\t"
-              "orrs %[cmd], %[t2]\n\t"
+              "ldrh %[t1], [%[t1], #0]\n\t"
+              "orrs %[cmd], %[t1]\n\t"
               "ldr %[t1], [%[itp0], #20]\n\t"
-              "ldrh %[t2], [%[t1], #0]\n\t"
-              "lsls %[t2], #10\n\t"
-              "orrs %[cmd], %[t2]\n\t"
+              "ldrh %[t1], [%[t1], #0]\n\t"
+              "lsls %[t1], #10\n\t"
+              "orrs %[cmd], %[t1]\n\t"
               "ldr %[t1], [%[itp0], #20]\n\t"
-              "ldrh %[t2], [%[t1], #0]\n\t"
-              "lsls %[t2], #20\n\t"
-              "orrs %[cmd], %[t2]" :
+              "ldrh %[t1], [%[t1], #0]\n\t"
+              "lsls %[t1], #20\n\t"
+              "orrs %[cmd], %[t1]" :
                 [cmd] "+l" (cmd),
-                [t1] "=&l" (t1), [t2] "=&l" (t2)  :
+                [t1] "=&l" (t1) :
                 [itp0] "l" (interp0) :
                 "cc");
         }
@@ -239,6 +389,7 @@ static void read_lines(uint32_t offset)
         bits = (bits << 20) | get_bits(20);
       }
     }
+#endif
     assert(interp1->accum[0] == len);
 
     *cmd_ptr++ = 0;
@@ -459,8 +610,15 @@ void setup_interpolators()
   interp_config_set_shift(&cfg, 3);
   interp_config_set_mask(&cfg, 2, FLASH_BUF_LOG_SIZE_BYTES - 1);
   interp_set_config(interp1, 0, &cfg);
-
   interp1->base[0] = (uintptr_t)flash_buffer;
+
+  // interp1 lane 1 indicates the number of bits left to read
+  // base1 is set to minus the number of bits that will have been read at
+  // the end of the line.  The line is therefore finished when result1 is zero.
+  // This saves a register.
+  cfg = interp_default_config();
+  interp_config_set_cross_input(&cfg, true);
+  interp_set_config(interp1, 1, &cfg);  
 }
 
 void __time_critical_func(display_loop)() 

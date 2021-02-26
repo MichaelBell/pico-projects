@@ -19,7 +19,7 @@ pico_sdk_init()
 
 add_executable(VGATest VGATest.c logic_analyser.c image.c flash.c )
 
-set_source_files_properties(image.c PROPERTIES COMPILE_FLAGS -O3)
+set_source_files_properties(image.c PROPERTIES COMPILE_FLAGS "-O3 -masm-syntax-unified")
 
 pico_set_program_name(VGATest "VGATest")
 pico_set_program_version(VGATest "0.1")
