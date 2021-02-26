@@ -83,24 +83,26 @@ static int32_t compressed_bit_len;
 // Read bits from flash ringbuffer.
 inline static uint32_t __attribute__((always_inline)) get_bits(int32_t bit_len)
 {
+  assert(bit_len < 32);
+
   interp1->add_raw[0] = bit_len;
 
   if (compressed_bit_len < bit_len)
   {
     int32_t need_bits = bit_len - compressed_bit_len;
-    uint32_t result = compressed_bits << need_bits;
+    uint32_t result = compressed_bits >> (32 - bit_len);
     compressed_bits = *(uint32_t*)interp1->peek[0];
     compressed_bit_len = 32 - need_bits;
     result |= compressed_bits >> compressed_bit_len;
-    compressed_bits &= ((~0u) >> need_bits);
+    compressed_bits <<= need_bits;
 
     return result;
   }
   else
   {
     compressed_bit_len -= bit_len;
-    uint32_t result = compressed_bits >> compressed_bit_len;
-    compressed_bits &= (1u << compressed_bit_len) - 1;
+    uint32_t result = compressed_bits >> (32 - bit_len);
+    compressed_bits <<= bit_len;
     return result;
   }
 }
@@ -109,15 +111,16 @@ inline static uint32_t __attribute__((always_inline)) get_32_bits()
 {
   interp1->add_raw[0] = 32;
 
+  if (compressed_bit_len == 0) {
+    return *(uint32_t*)interp1->peek[0];
+  }
+
   int32_t need_bits = 32 - compressed_bit_len;
-  uint32_t result = compressed_bits << need_bits;
+  uint32_t result = compressed_bits;
   compressed_bits = *(uint32_t*)interp1->peek[0];
   result |= compressed_bits >> compressed_bit_len;
+  compressed_bits <<= need_bits;
   
-  // Could maybe get rid of this and put the burden on the next reader
-  // Would save cycles on back to back 32-bit reads.
-  compressed_bits &= ((~0u) >> need_bits);
-
   return result;
 }
 
@@ -140,26 +143,30 @@ static void read_compression_tables()
   }
 }
 
-inline static uint32_t* run_asm_loop(uint32_t* cmd_ptr, uint16_t* pixel_table, uint16_t* rle_table)
+inline static uint32_t* run_inner_loop(int channel_idx, int offset)
 {
-#if 0
+  uint32_t* cmd_ptr = channel[channel_idx].ptr + offset;
+  uint16_t* pixel_table = channel[channel_idx].symbol_table[PIXEL_SYMBOLS_IDX];
+  uint16_t* rle_table = channel[channel_idx].symbol_table[RLE_SYMBOLS_IDX];
+
   uint32_t bits, cmd;
+
     asm ( "movs r2, #32\n\t"            // interp1->add_raw[0] = 32;
           "str r2, [%[itp0], #116]\n\t"
+          "cmp %[cbl], #0\n\t"
+          "beq.n 7f\n\t"
           "subs r2, r2, %[cbl]\n\t"     // need_bits = 32 - compressed_bit_len;
           "mov r1, %[cb]\n\t"
-          "lsls r1, r2\n\t"             // compressed_bits << need_bits
           "ldr r3, [%[itp0], #96]\n\t"  // *(uint32_t*)interp1->peek[0];
           "ldr r3, [r3, #0]\n\t"
           "movs %[bits], r3\n\t"        // compressed_bits >> compressed_bit_len
           "lsrs %[bits], %[cbl]\n\t"         
           "orrs %[bits], r1\n\t"        // bits |= compressed_bits >> compressed_bit_len;
           "lsls r3, r2\n\t"             // compressed_bits << need_bits
-      "1:  mov %[cb], r3\n\t"
 
           // Begin main loop
-          "lsls r1, %[bits], #1\n\t"    // if (!(bits & (1u << 30)))
-          "cmp r1, #0\n\nt"
+      "1:  lsls r1, %[bits], #1\n\t"    // if (!(bits & (1u << 30)))
+          "cmp r1, #0\n\t"
           "blt.n 2f\n\t"
 
           // Decompress case
@@ -170,7 +177,7 @@ inline static uint32_t* run_asm_loop(uint32_t* cmd_ptr, uint16_t* pixel_table, u
           // RLE case
           "movs %[cmd], #4\n\t"
           "ldr r1, %[rle_table]\n\t"
-      "5:  str rl, [%[itp0], #8]\n\t"  // interp->base[0] = table
+      "5:  str r1, [%[itp0], #8]\n\t"  // interp->base[0] = table
           "lsls %[cmd], #28\n\t"
           "ldr r1, [%[itp0], #20]\n\t"   // Build command from table
           "ldrh r1, [r1, #0]\n\t"
@@ -188,15 +195,19 @@ inline static uint32_t* run_asm_loop(uint32_t* cmd_ptr, uint16_t* pixel_table, u
           // Get 20 bits
           "movs r2, #20\n\t"
           "str r2, [%[itp0], #116]\n\t"
-          "mov r3, %[cb]\n\t"
-          "lsrs r3, #12\n\t"
+          "lsrs r1, r3, #12\n\t"
           "lsls %[bits], #20\n\t"   // bits = (bits << 20) | compressed_bits
-          "orrs %[bits], r3\n\t"
+          "orrs %[bits], r1\n\t"
           "subs %[cbl], %[cbl], r2\n\t"
-          "bge.n 4f\n\t"
+          "blt.n 4f\n\t"
 
           "lsls r3, #20\n\t"
-          "b.n 1f\n\t"
+          "b.n 1b\n\t"
+
+      "7:  ldr r3, [%[itp0], #96]\n\t"
+          "ldr %[bits], [r3, #0]\n\t"
+          "movs r3, #0\n\t"
+          "b.n 1b\n\t"
 
           // Normal case
       "2:  stm %[cmdp]!, {%[bits]}\n\t"   // *cmd_ptr++ = bits;
@@ -205,7 +216,9 @@ inline static uint32_t* run_asm_loop(uint32_t* cmd_ptr, uint16_t* pixel_table, u
           "bge.n 6f\n\t"                // >= 0: done
           "movs r1, #32\n\t"
           "str r1, [%[itp0], #116]\n\t"
-          "mov %[bits], %[cb]\n\t"
+          "cmp %[cbl], #0\n\t"
+          "beq.n 7b\n\t"
+          "mov %[bits], r3\n\t"
           "ldr r3, [%[itp0], #96]\n\t" // *(uint32_t*)interp1->peek[0];
           "ldr r3, [r3, #0]\n\t"
           "movs r2, r3\n\t"
@@ -213,12 +226,12 @@ inline static uint32_t* run_asm_loop(uint32_t* cmd_ptr, uint16_t* pixel_table, u
           "orrs %[bits], r2\n\t"
           "subs r1, r1, %[cbl]\n\t"
           "lsls r3, r1\n\t"
-          "b.n 1f\n\t"
+          "b.n 1b\n\t"
           
           // Pixel case
       "3:  movs %[cmd], #12\n\t"
-          "ldr r1, %[rle_table]\n\t"
-          "b.n 5f\n\t"
+          "ldr r1, %[pixel_table]\n\t"
+          "b.n 5b\n\t"
 
             // Get 20 bits, not enough bits
       "4:  ldr r3, [%[itp0], #96]\n\t" // *(uint32_t*)interp1->peek[0];
@@ -227,62 +240,23 @@ inline static uint32_t* run_asm_loop(uint32_t* cmd_ptr, uint16_t* pixel_table, u
           "movs r2, r3\n\t"
           "lsrs r2, %[cbl]\n\t"
           "orrs %[bits], r2\n\t"
-          "mov r1, #32\n\t"
+          "movs r1, #32\n\t"
           "subs r1, r1, %[cbl]\n\t"
           "lsls r3, r1\n\t"
-          "b.n 1f\n\t"
+          "b.n 1b\n\t"
 
-          // Exit - restore cb to normal alignment
-      "6:  mov r1, #32\n\t"
-          "subs r1, r1, %[cbl]\n\t"
-          "mov r3, %[cb]\n\t"
-          "lsrs r3, r1\n\t"
-          "mov %[cb], r3\n\t" 
-      : [cmdp] "+l" (cmd_ptr)
+          // Exit
+      "6:  mov %[cb], r3\n\t" 
+      : [cmdp] "+l" (cmd_ptr),
+        [cb] "+r" (compressed_bits),
+        [cbl] "+l" (compressed_bit_len),
+        [bits] "=&l" (bits),
+        [cmd] "=&l" (cmd)
       : [itp0] "l" (interp0),
-        [cb] "r" (compressed_bits),
-        [cbl] "l" (compressed_bit_len),
-        [bits] "l" (bits),
-        [cmd] "l" (cmd),
         [rle_table] "m" (rle_table),
         [pixel_table] "m" (pixel_table)
       : "r1", "r2", "r3", "cc" );
-#else
-    uint32_t bits = get_32_bits();
-    while (true)
-    {
-      if (bits & (1u << 30))
-      {
-        *cmd_ptr++ = bits;
-        if ((int32_t)interp1->peek[1] >= 0) break;
-        bits = get_32_bits();
-      }
-      else
-      {
-        uint32_t cmd;
-        interp0->accum[1] = bits;
-        if (bits & (1u << 31))
-        {
-          cmd = 0xC0000000u;
-          interp0->base[0] = (uintptr_t)pixel_table;
-        }
-        else
-        {
-          cmd = 0x40000000u;
-          interp0->base[0] = (uintptr_t)rle_table;
-        }
 
-        // The compiler makes a right mess of this!
-        cmd |= *(uint16_t*)interp0->pop[0];
-        cmd |= (uint32_t)(*(uint16_t*)interp0->pop[0]) << 10;
-        cmd |= (uint32_t)(*(uint16_t*)interp0->pop[0]) << 20;
-        *cmd_ptr++ = cmd;
-
-        // A compressed entry is not allowed to be the end of the line.
-        bits = (bits << 20) | get_bits(20);
-      }
-    }
-#endif
   return cmd_ptr;
 }
 
@@ -298,21 +272,14 @@ static void read_lines(uint32_t offset)
 
     uint32_t cur_bit_idx = interp1->accum[0];
 
-    // Fetch enough data.  This is a bit of a mess but the compiler should sort it out.
-    uint32_t bits_left_in_cur_word = 32 - (cur_bit_idx & 0x1f);
-    if (bits_left_in_cur_word == 32) bits_left_in_cur_word = 0;
-    flash_get_data_in_ringbuffer_blocking((len - bits_left_in_cur_word + 31) / 32);
+    // End of channel when accum[0] == len + cur_bit_idx / peek[1] == 0.
+    interp1->base[1] = -(cur_bit_idx + len);
+
+    // Fetch enough data.
+    flash_get_data_in_ringbuffer_blocking((len - compressed_bit_len + 31) / 32);
     
-    // End of channel when accum[0] == len.
-    len += cur_bit_idx;
-    interp1->base[1] = -len;
-
-    uint32_t* cmd_ptr = channel[channel_idx].ptr + offset;
-    uint16_t* pixel_table = channel[channel_idx].symbol_table[PIXEL_SYMBOLS_IDX];
-    uint16_t* rle_table = channel[channel_idx].symbol_table[RLE_SYMBOLS_IDX];
-
-#if 0
-    cmd_ptr = run_asm_loop(cmd_ptr, pixel_table, rle_table);
+#if 1
+    uint32_t* cmd_ptr = run_inner_loop(channel_idx, offset);
 #else
     uint32_t bits = get_32_bits();
     while (true)
@@ -338,50 +305,10 @@ static void read_lines(uint32_t offset)
           interp0->base[0] = (uintptr_t)rle_table;
         }
 
-#if 0
         // The compiler makes a right mess of this!
         cmd |= *(uint16_t*)interp0->pop[0];
         cmd |= (uint32_t)(*(uint16_t*)interp0->pop[0]) << 10;
         cmd |= (uint32_t)(*(uint16_t*)interp0->pop[0]) << 20;
-#else
-#if 1
-        asm ("ldr r6, [%[itp0], #20]\n\t"
-             "ldrh r1, [r6, #0]\n\t"
-             "orrs %[cmd], r1\n\t"
-             "ldr r6, [%[itp0], #20]\n\t"
-             "ldrh r1, [r6, #0]\n\t"
-             "lsls r1, #10\n\t"
-             "orrs %[cmd], r1\n\t"
-             "ldr r6, [%[itp0], #20]\n\t" 
-             "ldrh r1, [r6, #0]\n\t"
-             "lsls r1, #20\n\t"
-             "orrs %[cmd], r1" :
-              [cmd] "+l" (cmd) :
-              [itp0] "l" (interp0) :
-              "r1", "r6", "cc");
-#else
-        // Bizarrely this results in worse assembler output because
-        // the compiler decides to use registers it needs to save!!
-        {
-          uint32_t t1;
-          asm ("ldr %[t1], [%[itp0], #20]\n\t"
-              "ldrh %[t1], [%[t1], #0]\n\t"
-              "orrs %[cmd], %[t1]\n\t"
-              "ldr %[t1], [%[itp0], #20]\n\t"
-              "ldrh %[t1], [%[t1], #0]\n\t"
-              "lsls %[t1], #10\n\t"
-              "orrs %[cmd], %[t1]\n\t"
-              "ldr %[t1], [%[itp0], #20]\n\t"
-              "ldrh %[t1], [%[t1], #0]\n\t"
-              "lsls %[t1], #20\n\t"
-              "orrs %[cmd], %[t1]" :
-                [cmd] "+l" (cmd),
-                [t1] "=&l" (t1) :
-                [itp0] "l" (interp0) :
-                "cc");
-        }
-#endif
-#endif
 
         *cmd_ptr++ = cmd;
 
@@ -390,7 +317,7 @@ static void read_lines(uint32_t offset)
       }
     }
 #endif
-    assert(interp1->accum[0] == len);
+    assert(interp1->peek[1] == 0);
 
     *cmd_ptr++ = 0;
     channel[channel_idx].len = cmd_ptr - channel[channel_idx].ptr;
