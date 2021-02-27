@@ -61,8 +61,13 @@ static uint16_t image_row = 0;
 
 static uint32_t zero = 0;
 
+static volatile uint16_t core1_row_done = -1;
+
 // Commands to core 0
-#define CORE_CMD_INIT_FRAME      1
+#define CORE0_CMD_INIT_FRAME               1
+
+// Commands to core 1
+#define CORE1_CMD_DECOMPRESS_GREEN_CHANNEL 2
 
 #define GRAYSCALE_BIT (1u << 31)
 
@@ -77,8 +82,8 @@ const uint32_t white_line[] = {
   WHITE99, WHITE99, WHITE99, WHITE99, WHITE99, WHITE99, WHITE92, 0
 };
 
-static uint32_t compressed_bits;
-static int32_t compressed_bit_len;
+static uint32_t compressed_bits[2];
+static int32_t compressed_bit_len[2];
 
 // Read bits from flash ringbuffer.
 inline static uint32_t __attribute__((always_inline)) get_bits(int32_t bit_len)
@@ -87,22 +92,22 @@ inline static uint32_t __attribute__((always_inline)) get_bits(int32_t bit_len)
 
   interp1->add_raw[0] = bit_len;
 
-  if (compressed_bit_len < bit_len)
+  if (compressed_bit_len[0] < bit_len)
   {
-    int32_t need_bits = bit_len - compressed_bit_len;
-    uint32_t result = compressed_bits >> (32 - bit_len);
-    compressed_bits = *(uint32_t*)interp1->peek[0];
-    compressed_bit_len = 32 - need_bits;
-    result |= compressed_bits >> compressed_bit_len;
-    compressed_bits <<= need_bits;
+    int32_t need_bits = bit_len - compressed_bit_len[0];
+    uint32_t result = compressed_bits[0] >> (32 - bit_len);
+    compressed_bits[0] = *(uint32_t*)interp1->peek[0];
+    compressed_bit_len[0] = 32 - need_bits;
+    result |= compressed_bits[0] >> compressed_bit_len[0];
+    compressed_bits[0] <<= need_bits;
 
     return result;
   }
   else
   {
-    compressed_bit_len -= bit_len;
-    uint32_t result = compressed_bits >> (32 - bit_len);
-    compressed_bits <<= bit_len;
+    compressed_bit_len[0] -= bit_len;
+    uint32_t result = compressed_bits[0] >> (32 - bit_len);
+    compressed_bits[0] <<= bit_len;
     return result;
   }
 }
@@ -111,23 +116,23 @@ inline static uint32_t __attribute__((always_inline)) get_32_bits()
 {
   interp1->add_raw[0] = 32;
 
-  if (compressed_bit_len == 0) {
+  if (compressed_bit_len[0] == 0) {
     return *(uint32_t*)interp1->peek[0];
   }
 
-  int32_t need_bits = 32 - compressed_bit_len;
-  uint32_t result = compressed_bits;
-  compressed_bits = *(uint32_t*)interp1->peek[0];
-  result |= compressed_bits >> compressed_bit_len;
-  compressed_bits <<= need_bits;
+  int32_t need_bits = 32 - compressed_bit_len[0];
+  uint32_t result = compressed_bits[0];
+  compressed_bits[0] = *(uint32_t*)interp1->peek[0];
+  result |= compressed_bits[0] >> compressed_bit_len[0];
+  compressed_bits[0] <<= need_bits;
   
   return result;
 }
 
 static void read_compression_tables()
 {
-  compressed_bits = 0;
-  compressed_bit_len = 0;
+  compressed_bits[0] = 0;
+  compressed_bit_len[0] = 0;
 
   for (int i = 0; i < 3; ++i)
   {
@@ -143,13 +148,14 @@ static void read_compression_tables()
   }
 }
 
-inline static uint32_t* run_inner_loop(int channel_idx, int offset)
+inline static void __attribute__((always_inline)) run_inner_loop(int channel_idx, int offset, int bits_idx)
 {
   uint32_t* cmd_ptr = channel[channel_idx].ptr + offset;
   uint16_t* pixel_table = channel[channel_idx].symbol_table[PIXEL_SYMBOLS_IDX];
   uint16_t* rle_table = channel[channel_idx].symbol_table[RLE_SYMBOLS_IDX];
 
   uint32_t bits, cmd;
+  uint32_t cb = compressed_bits[bits_idx], cbl = compressed_bit_len[bits_idx];
 
     asm ( "movs r2, #32\n\t"            // interp1->add_raw[0] = 32;
           "str r2, [%[itp0], #116]\n\t"
@@ -248,8 +254,8 @@ inline static uint32_t* run_inner_loop(int channel_idx, int offset)
           // Exit
       "6:  mov %[cb], r3\n\t" 
       : [cmdp] "+l" (cmd_ptr),
-        [cb] "+r" (compressed_bits),
-        [cbl] "+l" (compressed_bit_len),
+        [cb] "+r" (cb),
+        [cbl] "+l" (cbl),
         [bits] "=&l" (bits),
         [cmd] "=&l" (cmd)
       : [itp0] "l" (interp0),
@@ -257,18 +263,26 @@ inline static uint32_t* run_inner_loop(int channel_idx, int offset)
         [pixel_table] "m" (pixel_table)
       : "r1", "r2", "r3", "cc" );
 
-  return cmd_ptr;
+    assert(interp1->peek[1] == 0);
+
+  *cmd_ptr++ = 0;
+  channel[channel_idx].len = cmd_ptr - channel[channel_idx].ptr;
+  assert(channel[channel_idx].len < MAX_CMD_LINE_LEN);
+
+  compressed_bit_len[bits_idx] = cbl; 
+  compressed_bits[bits_idx] = cb;
 }
 
 static void read_lines(uint32_t offset)
 {
   interp1->accum[0] = flash_get_data_in_ringbuffer_blocking(1) << 5;
-  compressed_bits = 0;
-  compressed_bit_len = 0;
+  compressed_bits[0] = 0;
+  compressed_bit_len[0] = 0;
 
   for (int channel_idx = 0; channel_idx < 3; ++channel_idx)
   {
     uint32_t len = get_bits(13);
+    //__breakpoint();
 
     uint32_t cur_bit_idx = interp1->accum[0];
 
@@ -276,10 +290,52 @@ static void read_lines(uint32_t offset)
     interp1->base[1] = -(cur_bit_idx + len);
 
     // Fetch enough data.
-    flash_get_data_in_ringbuffer_blocking((len - compressed_bit_len + 31) / 32);
+    flash_get_data_in_ringbuffer_blocking((len - compressed_bit_len[0] + 31) / 32);
     
+#define GREEN_ON_CORE1
+#ifdef GREEN_ON_CORE1
+    // Throw green channel decompress to core 1
+    uint32_t blue_bit_offset;
+    if (channel_idx == 0)
+    {
+      // Ensure we have enough bits to read the length.
+      uint32_t green_bit_offset = (cur_bit_idx + len) & ((1 << (FLASH_BUF_LOG_SIZE_BYTES + 3)) - 1);
+      int32_t bits_left_in_cur_word = 32 - ((green_bit_offset) & 0x1f);
+      uint32_t bits_from_cur_word = 0;
+      bits_from_cur_word = flash_buffer[green_bit_offset >> 5] << ((green_bit_offset) & 0x1f);
+
+      uint32_t green_len = bits_from_cur_word >> (32 - 13);
+      bits_from_cur_word <<= 13;
+
+      if (bits_left_in_cur_word < 13) {
+        flash_get_data_in_ringbuffer_blocking(1);
+        uint32_t next_idx = ((green_bit_offset >> 5) + 1) & FLASH_BUF_IDX_MASK;
+        bits_from_cur_word = flash_buffer[next_idx];
+        bits_left_in_cur_word = (32 - (13 - bits_left_in_cur_word));
+        green_len |= bits_from_cur_word >> bits_left_in_cur_word;
+        bits_from_cur_word <<= (32 - bits_left_in_cur_word);
+      }
+      else
+      {
+        bits_left_in_cur_word -= 13;
+      }
+
+      flash_get_data_in_ringbuffer_blocking((green_len - bits_left_in_cur_word + 31) / 32);
+
+      green_bit_offset = (green_bit_offset + 13);
+      blue_bit_offset = green_bit_offset + green_len;
+      sio_hw->fifo_wr = CORE1_CMD_DECOMPRESS_GREEN_CHANNEL;
+      sio_hw->fifo_wr = green_bit_offset;
+      sio_hw->fifo_wr = blue_bit_offset;
+      sio_hw->fifo_wr = bits_from_cur_word;
+      sio_hw->fifo_wr = bits_left_in_cur_word;
+      __sev();
+    }
+
+#endif
+
 #if 1
-    uint32_t* cmd_ptr = run_inner_loop(channel_idx, offset);
+    run_inner_loop(channel_idx, offset, 0);
 #else
     uint32_t bits = get_32_bits();
     while (true)
@@ -317,11 +373,14 @@ static void read_lines(uint32_t offset)
       }
     }
 #endif
-    assert(interp1->peek[1] == 0);
 
-    *cmd_ptr++ = 0;
-    channel[channel_idx].len = cmd_ptr - channel[channel_idx].ptr;
-    assert(channel[channel_idx].len < MAX_CMD_LINE_LEN);
+#ifdef GREEN_ON_CORE1
+    // Fix up compressed_bits/len
+    if (channel_idx == 0)
+    {
+      interp1->accum[0] = blue_bit_offset;
+    }
+#endif
 
     if (channel_idx != 2)
     {
@@ -330,56 +389,28 @@ static void read_lines(uint32_t offset)
       if (bits_left_in_cur_word == 32) bits_left_in_cur_word = 0;
       if (bits_left_in_cur_word < 13) flash_get_data_in_ringbuffer_blocking(1);
     }
+
+#ifdef GREEN_ON_CORE1
+    if (channel_idx == 0)
+    {
+      compressed_bits[0] = *(uint32_t*)interp1->peek[0];
+      compressed_bit_len[0] = blue_bit_offset & 0x1f;
+      compressed_bits[0] <<= compressed_bit_len[0];
+      if (compressed_bit_len[0] != 0) compressed_bit_len[0] = 32 - compressed_bit_len[0];
+
+      // Skip green on this core
+      ++channel_idx;
+    }
+#endif
   }
+
+#ifdef GREEN_ON_CORE1
+  while (display_row != core1_row_done);
+#endif
 
   flash_release_ringbuffer();
 }
 
-#ifdef IMAGE_IN_RAM
-// This is the from RAM version
-static void setup_next_line_ptr_and_len()
-{
-  if (display_row >= 120 && data_pos < image_dat + image_dat_len) {
-    bufnum ^= 1;
-
-    uint32_t lens = *data_pos++;
-    if (lens & GRAYSCALE_BIT) {
-      red_chan.len = lens & 0x3ff;
-      red_chan.ptr = red_chan.buffer[bufnum];
-      memcpy(red_chan.ptr + 2, data_pos, red_chan.len*sizeof(uint32_t));
-      data_pos += red_chan.len;
-      red_chan.ptr[red_chan.len + 2] = 0;
-      red_chan.len += 3;
-
-      green_chan.ptr = blue_chan.ptr = red_chan.ptr;
-      green_chan.len = blue_chan.len = red_chan.len;
-    }
-    else
-    {
-      red_chan.len = (lens & 0x3ff);
-      green_chan.len = ((lens >> 10) & 0x3ff);
-      blue_chan.len = (lens >> 20);
-      for (int i = 0; i < 3; ++i)
-      {
-        channel[i].ptr = channel[i].buffer[bufnum];
-        memcpy(channel[i].ptr + 2, data_pos, channel[i].len*sizeof(uint32_t));
-        data_pos += channel[i].len;
-        channel[i].ptr[channel[i].len + 2] = 0;
-        channel[i].len += 3;
-      }
-    }
-    assert(data_pos <= image_dat + image_dat_len);
-  }
-  else
-  {
-    for (int i = 0; i < 3; ++i)
-    {
-      channel[i].len = 1;
-      channel[i].ptr = &zero;
-    }
-  }
-}
-#else
 // This streams from flash
 static void __time_critical_func(setup_next_line_ptr_and_len)()
 {
@@ -423,7 +454,6 @@ static void __time_critical_func(setup_next_line_ptr_and_len)()
     }
   }
 }
-#endif
 
 #define vga_red_dma   5
 #define vga_green_dma 6
@@ -573,11 +603,12 @@ void __time_critical_func(display_loop)()
       uint data = instr >> 8;
       switch (cmd)
       {
-        case CORE_CMD_INIT_FRAME:
+        case CORE0_CMD_INIT_FRAME:
         {
           data_pos = image_dat;
           display_row = 0;
           image_row = 0;
+          core1_row_done = -1;
 
           irq_set_enabled(DMA_IRQ_0, false);
 
@@ -602,9 +633,34 @@ void __time_critical_func(display_loop)()
   }
 }
 
+void __time_critical_func(display_core1_loop)()
+{
+  setup_interpolators();
+  while(1) 
+  {
+      uint cmd = multicore_fifo_pop_blocking();
+      switch (cmd)
+      {
+        case CORE1_CMD_DECOMPRESS_GREEN_CHANNEL:
+          interp1->accum[0] = multicore_fifo_pop_blocking();
+          interp1->base[1] = -multicore_fifo_pop_blocking();
+          {
+            compressed_bits[1] = multicore_fifo_pop_blocking();
+            compressed_bit_len[1] = multicore_fifo_pop_blocking();
+            run_inner_loop(1, 2, 1);
+          }
+          core1_row_done = display_row;
+
+          break;
+        default:
+          __breakpoint();
+      }
+  }
+}
+
 void __no_inline_not_in_flash_func(display_start_new_frame)() 
 {
-  multicore_fifo_push_blocking(CORE_CMD_INIT_FRAME);
+  multicore_fifo_push_blocking(CORE0_CMD_INIT_FRAME);
 }
 
 void __no_inline_not_in_flash_func(display_end_frame)() 

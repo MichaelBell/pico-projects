@@ -2,7 +2,7 @@
 // You may use this under the terms of the BSD 3 clause license.
 
 // Size of the ring buffer - must be a power of 2 <= 2^15 bytes.
-#define FLASH_BUF_LOG_SIZE_BYTES 13
+#define FLASH_BUF_LOG_SIZE_BYTES 14
 #define FLASH_BUF_LEN_WORDS (1 << (FLASH_BUF_LOG_SIZE_BYTES - 2))
 #define FLASH_BUF_IDX_MASK  (FLASH_BUF_LEN_WORDS - 1)
 

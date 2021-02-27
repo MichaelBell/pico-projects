@@ -220,9 +220,7 @@ void vga_entry() {
     // Notify setup is complete
     multicore_fifo_push_blocking(0);
 
-    while (1) {
-        __wfi();
-    }
+    display_core1_loop();
 }
 
 int main()

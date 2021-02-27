@@ -263,7 +263,21 @@ uint32_t __not_in_flash_func(flash_get_data_in_ringbuffer_blocking)(uint32_t len
   assert(len_req > 0);
 
   uint32_t words_available = ((uint32_t*)dma_hw->ch[flash_dma_chan].write_addr - flash_buffer_ptr) & FLASH_BUF_IDX_MASK;
+
+  if (words_available < FLASH_BUF_LEN_WORDS / 4 && 
+      !dma_channel_is_busy(flash_dma_chan) && 
+      flash_total_words_requested < flash_source_data_len) 
+  {
+    assert((uint32_t*)dma_hw->ch[flash_dma_chan].write_addr != flash_prev_buffer_ptr);
+    flash_transfer();
+  }
+
   while (words_available < len_req) {
+    if (!dma_channel_is_busy(flash_dma_chan))
+    {
+      assert((uint32_t*)dma_hw->ch[flash_dma_chan].write_addr != flash_prev_buffer_ptr);
+      flash_transfer();
+    }
     words_available = ((uint32_t*)dma_hw->ch[flash_dma_chan].write_addr - flash_buffer_ptr) & FLASH_BUF_IDX_MASK;
   }
 

@@ -9,8 +9,11 @@
 // Loop to run any main display code, called on core0 after setup.
 void display_loop();
 
-// These calls are made from timing critical code on core1,
-// throw to core0 if anything interesting has to happen
+// Loop to run any worked code on core1, called after setup
+void display_core1_loop();
+
+// These calls are made from within interrupts in timing critical code on core1,
+// throw to one of the main loops if anything interesting has to happen
 
 // Call to user code to start transfers for next frame
 void display_start_new_frame();
