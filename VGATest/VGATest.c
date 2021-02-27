@@ -9,6 +9,8 @@
 #include "hardware/irq.h"
 #include "hardware/structs/bus_ctrl.h"
 #include "hardware/regs/busctrl.h"
+#include "hardware/structs/ssi.h"
+#include "hardware/vreg.h"
 
 #include "vga.h"
 #include "vga.pio.h"
@@ -26,22 +28,29 @@ void print_capture_buf(const uint32_t *buf, uint pin_base, uint pin_count, uint3
 
 const uint analyser_sm = 3;
 
-#if 0
+//#define RES_640_480_DOUBLE
+//#define RES_720p_SINGLE
+#define RES_720p_DOUBLE
+//#define RES_1080p_SINGLE
+
+#ifdef RES_640_480_DOUBLE
  // Timings for 640x480
 #define TIMING_V_PULSE    2
 #define TIMING_V_BACK    (30 + TIMING_V_PULSE)
 #define TIMING_V_DISPLAY (480 + TIMING_V_BACK)
 #define TIMING_V_FRONT   (9 + TIMING_V_DISPLAY)
-#define TIMING_H_FRONT   16
-#define TIMING_H_PULSE   96
-#define TIMING_H_BACK    48
-#define TIMING_H_DISPLAY 640
+#define TIMING_H_FRONT   (16 * 2)
+#define TIMING_H_PULSE   (96 * 2)
+#define TIMING_H_BACK    (48 * 2)
+#define TIMING_H_DISPLAY (640 * 2)
 #define CLOCK_VCO   1500
-#define CLOCK_PD1   6
-#define CLOCK_PD2   5
-#define CLOCK_RATE  (50 * MHZ)
-#else
-#if 1
+#define CLOCK_PD1   5
+#define CLOCK_PD2   3
+#define CLOCK_RATE  (100 * MHZ)
+#define CHANNEL_CLK_DIV 2
+#define VREG_VSEL VREG_VOLTAGE_1_10
+#endif
+#ifdef RES_720p_SINGLE
  // Timings for 720p
 #define TIMING_V_PULSE    5
 #define TIMING_V_BACK    (19 + TIMING_V_PULSE)
@@ -55,7 +64,27 @@ const uint analyser_sm = 3;
 #define CLOCK_PD1   7
 #define CLOCK_PD2   1
 #define CLOCK_RATE  149142857
-#else
+#define CHANNEL_CLK_DIV 1
+#define VREG_VSEL VREG_VOLTAGE_1_10
+#endif
+#ifdef RES_720p_DOUBLE
+// Timings for 720p at double sys clock
+#define TIMING_V_PULSE    5
+#define TIMING_V_BACK    (12 + TIMING_V_PULSE)
+#define TIMING_V_DISPLAY (720 + TIMING_V_BACK)
+#define TIMING_V_FRONT   (4 + TIMING_V_DISPLAY)
+#define TIMING_H_FRONT   (64 * 2)
+#define TIMING_H_PULSE   (128 * 2)
+#define TIMING_H_BACK    (192 * 2)
+#define TIMING_H_DISPLAY (1280 * 2)
+#define CLOCK_VCO   1488
+#define CLOCK_PD1   5
+#define CLOCK_PD2   1
+#define CLOCK_RATE  297600 * KHZ
+#define CHANNEL_CLK_DIV 2
+#define VREG_VSEL VREG_VOLTAGE_1_15
+#endif
+#ifdef RES_1080p_SINGLE
  // Timings for 1080p
 #define TIMING_V_PULSE    8
 #define TIMING_V_BACK    (6 + TIMING_V_PULSE)
@@ -69,8 +98,10 @@ const uint analyser_sm = 3;
 #define CLOCK_PD1   5
 #define CLOCK_PD2   1
 #define CLOCK_RATE  266400 * KHZ
+#define CHANNEL_CLK_DIV 1
+#define VREG_VSEL VREG_VOLTAGE_1_10
 #endif
-#endif
+
 
 static uint16_t timing_row = 0;
 static uint16_t timing_phase = 0;
@@ -144,14 +175,14 @@ void __no_inline_not_in_flash_func(end_of_line_isr)() {
         //       Clear OSR (it is read when SM is re-enabled)
         //       Drain FIFOs
         //       Re-enable
+        vga_pio->ctrl = 0x008;
         for (uint sm = vga_red_sm; sm <= vga_blue_sm; ++sm)
         {
-            pio_sm_set_enabled(vga_pio, sm, false);
             pio_sm_drain_tx_fifo(vga_pio, sm);
             pio_sm_exec_wait_blocking(vga_pio, sm, pio_encode_jmp(vga_channel_offset_end));
             pio_sm_exec_wait_blocking(vga_pio, sm, pio_encode_mov(pio_osr, pio_null));
-            pio_sm_set_enabled(vga_pio, sm, true);
         }
+        vga_pio->ctrl = 0x70f;
     }
     else if (eol_row == TIMING_V_DISPLAY + 3)
     {
@@ -169,9 +200,11 @@ void vga_entry() {
 
     uint offset = pio_add_program(vga_pio, &vga_channel_program);
     assert(offset == 0);
-    vga_channel_program_init(vga_pio, vga_red_sm, 0);
-    vga_channel_program_init(vga_pio, vga_green_sm, 6);
-    vga_channel_program_init(vga_pio, vga_blue_sm, 11);
+    vga_channel_program_init(vga_pio, vga_red_sm, 0, CHANNEL_CLK_DIV);
+    vga_channel_program_init(vga_pio, vga_green_sm, 6, CHANNEL_CLK_DIV);
+    vga_channel_program_init(vga_pio, vga_blue_sm, 11, CHANNEL_CLK_DIV);
+    vga_pio->ctrl = 0x707;
+
     offset = pio_add_program(vga_pio, &vga_timing_program);
     vga_timing_program_init(vga_pio, vga_timing_sm, offset, 16);
 
@@ -194,6 +227,10 @@ void vga_entry() {
 
 int main()
 {
+    // Set required voltage
+    vreg_set_voltage(VREG_VSEL);
+	sleep_ms(10);
+
     // Set appropriate clock
     set_sys_clock_pll(CLOCK_VCO * MHZ, CLOCK_PD1, CLOCK_PD2);
 

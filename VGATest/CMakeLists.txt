@@ -29,6 +29,10 @@ pico_enable_stdio_usb(VGATest 0)
 
 pico_generate_pio_header(VGATest ${CMAKE_CURRENT_LIST_DIR}/vga.pio)
 
+# Slow down the flash to allow a faster system clock
+target_compile_definitions(VGATest PRIVATE PICO_FLASH_SPI_CLKDIV=4)
+target_compile_definitions(bs2_default PRIVATE PICO_FLASH_SPI_CLKDIV=4)
+
 # Add the standard library to the build
 target_link_libraries(VGATest pico_stdlib pico_multicore)
 
