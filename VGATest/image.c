@@ -441,7 +441,7 @@ static void __time_critical_func(setup_next_line_ptr_and_len)()
     }
   }
 
-  else if (display_row > 13 && image_row < IMAGE_ROWS && (display_row % 7) >= 0 && display_row < DISPLAY_ROWS - 39)
+  else if (image_row < IMAGE_ROWS) // && (display_row % 7) >= 0 && display_row < DISPLAY_ROWS - 39)
   {
     bufnum ^= 1;
     ++image_row;

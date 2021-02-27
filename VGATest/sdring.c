@@ -37,8 +37,7 @@ inline static bool sdring_eof()
 
 static void sdring_start_transfer()
 {
-  int rc;
-  if (!sd_scatter_read_complete(&rc))
+  if (!sd_scatter_read_complete(NULL, NULL))
     return;
 
   // Previous transfer is complete
@@ -91,8 +90,7 @@ void sdring_reset_stream()
   sdring_buffer_ptr = sdring_buffer;
 
   // Wait for any active transfers to complete.
-  int rc;
-  while (!sd_scatter_read_complete(&rc))
+  while (!sd_scatter_read_complete(NULL, NULL))
   {
     __breakpoint();
   }
@@ -116,17 +114,18 @@ uint32_t sdring_get_data_in_ringbuffer_blocking(uint32_t len_req)
 
   uint32_t words_available = (sdring_start_write_addr - sdring_buffer_ptr) & SDRING_BUF_IDX_MASK;
 
-  int rc;
   if (words_available < SDRING_BUF_LEN_WORDS / 4 && 
-      sd_scatter_read_complete(&rc) && 
+      sd_scatter_read_complete(NULL, NULL) && 
       !sdring_eof())
   {
     assert(sdring_start_write_addr != sdring_prev_buffer_ptr);
     sdring_start_transfer();
   }
 
-  while (words_available < len_req) {
-    if (sd_scatter_read_complete(&rc))
+  int sectors_read = 0;
+  while (words_available + (128 * sectors_read) < len_req) {
+    sectors_read = 0;
+    if (sd_scatter_read_complete(NULL, &sectors_read))
     {
       assert(sdring_start_write_addr != sdring_prev_buffer_ptr);
       sdring_start_transfer();
@@ -151,8 +150,7 @@ void sdring_release_ringbuffer()
   sdring_prev_buffer_ptr = sdring_buffer + (((sdring_buffer_ptr - sdring_buffer) - 1) & SDRING_BUF_IDX_MASK);
 
   // Check whether we should now restart the transfer
-  int rc;
-  if (sd_scatter_read_complete(&rc))
+  if (sd_scatter_read_complete(NULL, NULL))
   {
     sdring_start_transfer();
   }
