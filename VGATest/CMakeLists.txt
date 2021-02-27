@@ -9,6 +9,7 @@ set(PICO_COPY_TO_RAM 1)
 
 # Pull in Pico SDK (must be before project)
 include(pico_sdk_import.cmake)
+include(pico_extras_import.cmake)
 
 project(VGATest C CXX ASM)
 
@@ -17,7 +18,7 @@ pico_sdk_init()
 
 # Add executable. Default name is the project name, version 0.1
 
-add_executable(VGATest VGATest.c logic_analyser.c image.c flash.c )
+add_executable(VGATest VGATest.c image.c sdring.c )
 
 set_source_files_properties(image.c PROPERTIES COMPILE_FLAGS "-masm-syntax-unified")
 
@@ -38,6 +39,7 @@ target_link_libraries(VGATest pico_stdlib pico_multicore)
 
 # Add any user requested libraries
 target_link_libraries(VGATest
+        pico_sd_card
         hardware_dma
         hardware_pio
         hardware_interp

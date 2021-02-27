@@ -15,7 +15,7 @@
 #include "vga.h"
 #include "vga.pio.h"
 
-#include "flash.h"
+#include "sdring.h"
 
 const uint CAPTURE_PIN_BASE = 0;
 const uint CAPTURE_PIN_COUNT = 32;
@@ -68,9 +68,10 @@ const uint analyser_sm = 3;
 #define VREG_VSEL VREG_VOLTAGE_1_10
 #endif
 #ifdef RES_720p_DOUBLE
+#if 1
 // Timings for 720p at double sys clock
 #define TIMING_V_PULSE    5
-#define TIMING_V_BACK    (12 + TIMING_V_PULSE)
+#define TIMING_V_BACK    (19 + TIMING_V_PULSE)
 #define TIMING_V_DISPLAY (720 + TIMING_V_BACK)
 #define TIMING_V_FRONT   (4 + TIMING_V_DISPLAY)
 #define TIMING_H_FRONT   (64 * 2)
@@ -83,6 +84,22 @@ const uint analyser_sm = 3;
 #define CLOCK_RATE  297600 * KHZ
 #define CHANNEL_CLK_DIV 2
 #define VREG_VSEL VREG_VOLTAGE_1_15
+#else
+#define TIMING_V_PULSE    5
+#define TIMING_V_BACK    (12 + TIMING_V_PULSE)
+#define TIMING_V_DISPLAY (720 + TIMING_V_BACK)
+#define TIMING_V_FRONT   (4 + TIMING_V_DISPLAY)
+#define TIMING_H_FRONT   (64 * 2)
+#define TIMING_H_PULSE   (128 * 2)
+#define TIMING_H_BACK    (192 * 2)
+#define TIMING_H_DISPLAY (1280 * 2)
+#define CLOCK_VCO   1140
+#define CLOCK_PD1   4
+#define CLOCK_PD2   1
+#define CLOCK_RATE  285000 * KHZ
+#define CHANNEL_CLK_DIV 2
+#define VREG_VSEL VREG_VOLTAGE_1_15
+#endif
 #endif
 #ifdef RES_1080p_SINGLE
  // Timings for 1080p
@@ -167,7 +184,7 @@ void __no_inline_not_in_flash_func(end_of_line_isr)() {
     {
         display_end_frame();
     }
-    else if (eol_row == TIMING_V_DISPLAY + 2)
+    else if (eol_row == (TIMING_V_DISPLAY + 2) % (TIMING_V_FRONT))
     {
         // Force SMs to get back into a good state:
         //       Disable
@@ -184,7 +201,7 @@ void __no_inline_not_in_flash_func(end_of_line_isr)() {
         }
         vga_pio->ctrl = 0x70f;
     }
-    else if (eol_row == TIMING_V_DISPLAY + 3)
+    else if (eol_row == (TIMING_V_DISPLAY + 3) % (TIMING_V_FRONT))
     {
         display_start_new_frame();
     }
@@ -195,8 +212,6 @@ void vga_entry() {
     // Give core 1 priority access to the bus as it drives timing directly
     // and the shared PIO bus connection can get very busy with pixel data traffic
     bus_ctrl_hw->priority = BUSCTRL_BUS_PRIORITY_PROC1_BITS;
-
-    flash_init(true);
 
     uint offset = pio_add_program(vga_pio, &vga_channel_program);
     assert(offset == 0);

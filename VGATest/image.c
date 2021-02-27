@@ -10,11 +10,11 @@
 #include "hardware/interp.h"
 
 #include "vga.h"
-#include "flash.h"
+#include "sdring.h"
 
 //#include "feeding_duck320.h"
 //#include "perseverance.h"
-#include "pcrane720.h"
+//#include "pcrane720.h"
 //#include "feeding_duck720.h"
 
 //#include "pcrane1078.h"
@@ -58,6 +58,7 @@ channel_t channel[3];
 static uint16_t bufnum = 0;
 static uint16_t display_row = 0;
 static uint16_t image_row = 0;
+static bool abort_frame = false;
 
 static uint32_t zero = 0;
 
@@ -138,12 +139,12 @@ static void read_compression_tables()
   {
     for (int j = 0; j < 2; ++j)
     {
-      interp1->accum[0] = flash_get_data_in_ringbuffer_blocking((SYMBOLS_IN_TABLE * 10) / 32) << 5;
+      interp1->accum[0] = sdring_get_data_in_ringbuffer_blocking((SYMBOLS_IN_TABLE * 10) / 32) << 5;
 
       for (int k = 0; k < SYMBOLS_IN_TABLE; ++k)
         channel[i].symbol_table[j][k] = get_bits(10);
       
-      flash_release_ringbuffer();
+      sdring_release_ringbuffer();
     }
   }
 }
@@ -275,11 +276,11 @@ inline static void __attribute__((always_inline)) run_inner_loop(int channel_idx
 
 static void read_lines(uint32_t offset)
 {
-  interp1->accum[0] = flash_get_data_in_ringbuffer_blocking(1) << 5;
+  interp1->accum[0] = sdring_get_data_in_ringbuffer_blocking(1) << 5;
   compressed_bits[0] = 0;
   compressed_bit_len[0] = 0;
 
-  for (int channel_idx = 0; channel_idx < 3; ++channel_idx)
+  for (int channel_idx = 0; channel_idx < 3 && !abort_frame; ++channel_idx)
   {
     uint32_t len = get_bits(13);
     //__breakpoint();
@@ -290,7 +291,7 @@ static void read_lines(uint32_t offset)
     interp1->base[1] = -(cur_bit_idx + len);
 
     // Fetch enough data.
-    flash_get_data_in_ringbuffer_blocking((len - compressed_bit_len[0] + 31) / 32);
+    sdring_get_data_in_ringbuffer_blocking((len - compressed_bit_len[0] + 31) / 32);
     
 #define GREEN_ON_CORE1
 #ifdef GREEN_ON_CORE1
@@ -299,18 +300,18 @@ static void read_lines(uint32_t offset)
     if (channel_idx == 0)
     {
       // Ensure we have enough bits to read the length.
-      uint32_t green_bit_offset = (cur_bit_idx + len) & ((1 << (FLASH_BUF_LOG_SIZE_BYTES + 3)) - 1);
+      uint32_t green_bit_offset = (cur_bit_idx + len) & ((1 << (SDRING_BUF_LOG_SIZE_BYTES + 3)) - 1);
       int32_t bits_left_in_cur_word = 32 - ((green_bit_offset) & 0x1f);
       uint32_t bits_from_cur_word = 0;
-      bits_from_cur_word = flash_buffer[green_bit_offset >> 5] << ((green_bit_offset) & 0x1f);
+      bits_from_cur_word = sdring_buffer[green_bit_offset >> 5] << ((green_bit_offset) & 0x1f);
 
       uint32_t green_len = bits_from_cur_word >> (32 - 13);
       bits_from_cur_word <<= 13;
 
       if (bits_left_in_cur_word < 13) {
-        flash_get_data_in_ringbuffer_blocking(1);
-        uint32_t next_idx = ((green_bit_offset >> 5) + 1) & FLASH_BUF_IDX_MASK;
-        bits_from_cur_word = flash_buffer[next_idx];
+        sdring_get_data_in_ringbuffer_blocking(1);
+        uint32_t next_idx = ((green_bit_offset >> 5) + 1) & SDRING_BUF_IDX_MASK;
+        bits_from_cur_word = sdring_buffer[next_idx];
         bits_left_in_cur_word = (32 - (13 - bits_left_in_cur_word));
         green_len |= bits_from_cur_word >> bits_left_in_cur_word;
         bits_from_cur_word <<= (32 - bits_left_in_cur_word);
@@ -320,7 +321,7 @@ static void read_lines(uint32_t offset)
         bits_left_in_cur_word -= 13;
       }
 
-      flash_get_data_in_ringbuffer_blocking((green_len - bits_left_in_cur_word + 31) / 32);
+      sdring_get_data_in_ringbuffer_blocking((green_len - bits_left_in_cur_word + 31) / 32);
 
       green_bit_offset = (green_bit_offset + 13);
       blue_bit_offset = green_bit_offset + green_len;
@@ -387,7 +388,7 @@ static void read_lines(uint32_t offset)
       // Ensure we have enough bits to read the length.
       uint32_t bits_left_in_cur_word = 32 - (interp1->accum[0] & 0x1f);
       if (bits_left_in_cur_word == 32) bits_left_in_cur_word = 0;
-      if (bits_left_in_cur_word < 13) flash_get_data_in_ringbuffer_blocking(1);
+      if (bits_left_in_cur_word < 13) sdring_get_data_in_ringbuffer_blocking(1);
     }
 
 #ifdef GREEN_ON_CORE1
@@ -408,7 +409,7 @@ static void read_lines(uint32_t offset)
   while (display_row != core1_row_done);
 #endif
 
-  flash_release_ringbuffer();
+  sdring_release_ringbuffer();
 }
 
 // This streams from flash
@@ -420,16 +421,27 @@ static void __time_critical_func(setup_next_line_ptr_and_len)()
 
   // This is useful for forcing the display to adjust to the picture if you've
   // confused it.
-  if (false && (display_row == 0 || display_row == DISPLAY_ROWS - 1))
+  if (false && (display_row == 0 || display_row >= DISPLAY_ROWS - 20))
   {
-    for (int i = 0; i < 3; ++i)
+    if ((display_row & 1) == 0)
     {
-      channel[i].len = count_of(white_line);
-      channel[i].ptr = (uint32_t*)white_line;
+      for (int i = 0; i < 3; ++i)
+      {
+        channel[i].len = count_of(white_line);
+        channel[i].ptr = (uint32_t*)white_line;
+      }
+    }
+    else
+    {
+      for (int i = 0; i < 3; ++i)
+      {
+        channel[i].len = 1;
+        channel[i].ptr = &zero;
+      }
     }
   }
 
-  else if (image_row < IMAGE_ROWS) // && (display_row & 1) == 0) //display_row < DISPLAY_ROWS - 100)
+  else if (display_row > 13 && image_row < IMAGE_ROWS && (display_row % 7) >= 0 && display_row < DISPLAY_ROWS - 39)
   {
     bufnum ^= 1;
     ++image_row;
@@ -443,7 +455,7 @@ static void __time_critical_func(setup_next_line_ptr_and_len)()
       }
       read_lines(offset);
     }
-    assert(data_pos <= image_dat + image_dat_len);
+    //assert(data_pos <= image_dat + image_dat_len);
   }
   else
   {
@@ -463,6 +475,7 @@ static uint32_t complete_dma_channel_bits = 0;
 
 static void __time_critical_func(transfer_next_line)()
 {
+  if (abort_frame) return;
   dma_channel_transfer_from_buffer_now(vga_red_dma, red_chan.ptr, red_chan.len);
   dma_channel_transfer_from_buffer_now(vga_green_dma, green_chan.ptr, green_chan.len);
   dma_channel_transfer_from_buffer_now(vga_blue_dma, blue_chan.ptr, blue_chan.len);
@@ -565,9 +578,9 @@ void setup_interpolators()
   // peek0 will give the address to read from.
   cfg = interp_default_config();
   interp_config_set_shift(&cfg, 3);
-  interp_config_set_mask(&cfg, 2, FLASH_BUF_LOG_SIZE_BYTES - 1);
+  interp_config_set_mask(&cfg, 2, SDRING_BUF_LOG_SIZE_BYTES - 1);
   interp_set_config(interp1, 0, &cfg);
-  interp1->base[0] = (uintptr_t)flash_buffer;
+  interp1->base[0] = (uintptr_t)sdring_buffer;
 
   // interp1 lane 1 indicates the number of bits left to read
   // base1 is set to minus the number of bits that will have been read at
@@ -580,12 +593,12 @@ void setup_interpolators()
 
 void __time_critical_func(display_loop)() 
 {
+  sdring_init(true);
+
   setup_dma_channels();
   setup_interpolators();
 
-#ifndef IMAGE_IN_RAM
-  flash_set_stream(image_dat, image_dat_len, false);
-#endif
+  sdring_set_stream(100000, 301704, false); // TODO
 
 #if 1
   for (int i = 0; i < 3; ++i) {
@@ -605,14 +618,15 @@ void __time_critical_func(display_loop)()
       {
         case CORE0_CMD_INIT_FRAME:
         {
-          data_pos = image_dat;
+          //data_pos = image_dat;
           display_row = 0;
           image_row = 0;
           core1_row_done = -1;
+          abort_frame = false;
 
           irq_set_enabled(DMA_IRQ_0, false);
 
-          flash_reset_stream();
+          sdring_reset_stream();
           read_compression_tables();
           setup_next_line_ptr_and_len();
           
@@ -665,6 +679,7 @@ void __no_inline_not_in_flash_func(display_start_new_frame)()
 
 void __no_inline_not_in_flash_func(display_end_frame)() 
 {
+  abort_frame = true;
   irq_set_enabled(DMA_IRQ_0, false);
   dma_channel_abort(vga_red_dma);
   dma_channel_abort(vga_green_dma);
