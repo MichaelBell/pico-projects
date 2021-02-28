@@ -69,6 +69,7 @@ void sdring_init(bool byte_swap)
 {
   sd_init_4pins();
   sd_set_clock_divider(2);
+  sd_set_byteswap_on_read(byte_swap);
 }
 
 // Set the data to stream and optionally start streaming.
