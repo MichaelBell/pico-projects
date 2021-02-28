@@ -8,9 +8,11 @@
 #include "hardware/pio.h"
 #include "hardware/irq.h"
 #include "hardware/interp.h"
+#include "pico/sd_card.h"
 
 #include "vga.h"
 #include "sdring.h"
+#include "vgaaudio.h"
 
 //#include "feeding_duck320.h"
 //#include "perseverance.h"
@@ -441,7 +443,7 @@ static void __time_critical_func(setup_next_line_ptr_and_len)()
     }
   }
 
-  else if (image_row < IMAGE_ROWS && display_row >= 10 && display_row < DISPLAY_ROWS - 10)
+  else if (image_row < IMAGE_ROWS) // /*&& (display_row & 1) == 0*/ && display_row >= 80 && display_row < DISPLAY_ROWS - 80)
   {
     bufnum ^= 1;
     ++image_row;
@@ -591,23 +593,17 @@ void setup_interpolators()
   interp_set_config(interp1, 1, &cfg);  
 }
 
-#define NUM_IMAGES 45
 #define FRAMES_BEFORE_CHANGE 4
 #define FIRST_IMAGE_OFFSET 111000
 #define IMAGE_OFFSET_GAP 1000
 
-static const int image_lengths[NUM_IMAGES] = {
-  360728, 360900, 360580, 360704, 360944, 361072, 361284, 361984, 361564, 361756, 
-  365872, 365552, 367240, 368128, 367632, 367616, 367624, 367500, 367964, 367072, 
-  366812, 366700, 364572, 364168, 362568, 361904, 361532, 360472, 360124, 358848, 
-  359268, 359488, 358076, 359704, 360448, 360332, 359876, 360024, 361348, 360652, 
-  360232, 360532, 359768, 361492, 360568
-};
+#include "image_lens.h"
 
 void __time_critical_func(display_loop)() 
 {
   uint32_t frame_number = 0;
 
+  //audio_init();
   sdring_init(true);
 
   setup_dma_channels();
@@ -640,6 +636,12 @@ void __time_critical_func(display_loop)()
           irq_set_enabled(DMA_IRQ_0, false);
 
           uint32_t image_idx = (frame_number++ / FRAMES_BEFORE_CHANGE) % NUM_IMAGES;
+          if (image_idx == 0) {
+            //audio_reset();
+          }
+          //audio_transfer();
+
+          //uint32_t image_idx = 900 + ((frame_number++ / FRAMES_BEFORE_CHANGE) % 200);
           sdring_set_stream(FIRST_IMAGE_OFFSET + (IMAGE_OFFSET_GAP * image_idx), image_lengths[image_idx], true);
           read_compression_tables();
           setup_next_line_ptr_and_len();
@@ -694,6 +696,7 @@ void __no_inline_not_in_flash_func(display_start_new_frame)()
 void __no_inline_not_in_flash_func(display_end_frame)() 
 {
   abort_frame = true;
+  core1_row_done = display_row;
   irq_set_enabled(DMA_IRQ_0, false);
   dma_channel_abort(vga_red_dma);
   dma_channel_abort(vga_green_dma);

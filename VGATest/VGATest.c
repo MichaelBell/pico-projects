@@ -211,7 +211,7 @@ void __no_inline_not_in_flash_func(end_of_line_isr)() {
 void vga_entry() {
     // Give core 1 priority access to the bus as it drives timing directly
     // and the shared PIO bus connection can get very busy with pixel data traffic
-    bus_ctrl_hw->priority = BUSCTRL_BUS_PRIORITY_PROC1_BITS;
+    //bus_ctrl_hw->priority = BUSCTRL_BUS_PRIORITY_PROC1_BITS;
 
     uint offset = pio_add_program(vga_pio, &vga_channel_program);
     assert(offset == 0);

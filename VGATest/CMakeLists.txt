@@ -18,7 +18,7 @@ pico_sdk_init()
 
 # Add executable. Default name is the project name, version 0.1
 
-add_executable(VGATest VGATest.c image.c sdring.c )
+add_executable(VGATest VGATest.c image.c sdring.c vgaaudio.c)
 
 set_source_files_properties(image.c PROPERTIES COMPILE_FLAGS "-masm-syntax-unified")
 
@@ -31,7 +31,7 @@ pico_enable_stdio_usb(VGATest 0)
 pico_generate_pio_header(VGATest ${CMAKE_CURRENT_LIST_DIR}/vga.pio)
 
 # Slow down the flash to allow a faster system clock
-target_compile_definitions(VGATest PRIVATE PICO_FLASH_SPI_CLKDIV=4)
+target_compile_definitions(VGATest PRIVATE PICO_FLASH_SPI_CLKDIV=4 PICO_AUDIO_DMA_IRQ=1 PICO_AUDIO_PIO=1)
 target_compile_definitions(bs2_default PRIVATE PICO_FLASH_SPI_CLKDIV=4)
 
 # Add the standard library to the build
@@ -43,6 +43,7 @@ target_link_libraries(VGATest
         hardware_dma
         hardware_pio
         hardware_interp
+        pico_audio_i2s
         )
 
 pico_add_extra_outputs(VGATest)
