@@ -28,6 +28,7 @@ static uint32_t sdring_next_block_to_request;
 
 // Source data
 static uint32_t sdring_source_start_block;
+static uint32_t sdring_source_end_block;  // Actually one past end
 static uint32_t sdring_source_data_len;  // Note this is in bytes.
 
 inline static bool sdring_eof()
@@ -57,7 +58,8 @@ static void sdring_start_transfer()
     return;
 
   // Read
-  sd_readblocks_async(sdring_start_write_addr, sdring_next_block_to_request, SDRING_BLOCKS_PER_READ);
+  uint32_t blocks_to_read = MIN(SDRING_BLOCKS_PER_READ, sdring_source_end_block - sdring_next_block_to_request);
+  sd_readblocks_async(sdring_start_write_addr, sdring_next_block_to_request, blocks_to_read);
   sdring_target_write_addr = sdring_buffer + next_idx;
   sdring_next_block_to_request += SDRING_BLOCKS_PER_READ;
 }
@@ -74,6 +76,7 @@ void sdring_init(bool byte_swap)
 void sdring_set_stream(uint32_t start_block, uint32_t len_bytes, bool start_streaming)
 {
   sdring_source_start_block = start_block;
+  sdring_source_end_block = start_block + (len_bytes + 511) / 512;
   sdring_source_data_len = len_bytes;
 
   sdring_reset_stream();
@@ -92,7 +95,7 @@ void sdring_reset_stream()
   // Wait for any active transfers to complete.
   while (!sd_scatter_read_complete(NULL, NULL))
   {
-    __breakpoint();
+    //__breakpoint();
   }
 
   // Kick off first read

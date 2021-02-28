@@ -1,2 +1,5 @@
 build/
 *.gif
+*.huf
+*.dat
+frames/

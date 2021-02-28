@@ -441,13 +441,13 @@ static void __time_critical_func(setup_next_line_ptr_and_len)()
     }
   }
 
-  else if (image_row < IMAGE_ROWS) // && (display_row % 7) >= 0 && display_row < DISPLAY_ROWS - 39)
+  else if (image_row < IMAGE_ROWS && display_row >= 10 && display_row < DISPLAY_ROWS - 10)
   {
     bufnum ^= 1;
     ++image_row;
 
     {
-      const uint32_t offset = 2;
+      const uint32_t offset = 0;
 
       for (int i = 0; i < 3; ++i)
       {
@@ -591,14 +591,27 @@ void setup_interpolators()
   interp_set_config(interp1, 1, &cfg);  
 }
 
+#define NUM_IMAGES 45
+#define FRAMES_BEFORE_CHANGE 4
+#define FIRST_IMAGE_OFFSET 111000
+#define IMAGE_OFFSET_GAP 1000
+
+static const int image_lengths[NUM_IMAGES] = {
+  360728, 360900, 360580, 360704, 360944, 361072, 361284, 361984, 361564, 361756, 
+  365872, 365552, 367240, 368128, 367632, 367616, 367624, 367500, 367964, 367072, 
+  366812, 366700, 364572, 364168, 362568, 361904, 361532, 360472, 360124, 358848, 
+  359268, 359488, 358076, 359704, 360448, 360332, 359876, 360024, 361348, 360652, 
+  360232, 360532, 359768, 361492, 360568
+};
+
 void __time_critical_func(display_loop)() 
 {
+  uint32_t frame_number = 0;
+
   sdring_init(true);
 
   setup_dma_channels();
   setup_interpolators();
-
-  sdring_set_stream(100000, 301704, false); // TODO
 
 #if 1
   for (int i = 0; i < 3; ++i) {
@@ -626,7 +639,8 @@ void __time_critical_func(display_loop)()
 
           irq_set_enabled(DMA_IRQ_0, false);
 
-          sdring_reset_stream();
+          uint32_t image_idx = (frame_number++ / FRAMES_BEFORE_CHANGE) % NUM_IMAGES;
+          sdring_set_stream(FIRST_IMAGE_OFFSET + (IMAGE_OFFSET_GAP * image_idx), image_lengths[image_idx], true);
           read_compression_tables();
           setup_next_line_ptr_and_len();
           
@@ -661,7 +675,7 @@ void __time_critical_func(display_core1_loop)()
           {
             compressed_bits[1] = multicore_fifo_pop_blocking();
             compressed_bit_len[1] = multicore_fifo_pop_blocking();
-            run_inner_loop(1, 2, 1);
+            run_inner_loop(1, 0, 1);
           }
           core1_row_done = display_row;
 
