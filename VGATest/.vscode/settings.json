@@ -2,6 +2,14 @@
   "files.associations": {
     "*.pio": "asm",
     "pio.h": "c",
-    "sd_card.h": "c"
+    "sd_card.h": "c",
+    "vga.h": "c",
+    "stdlib.h": "c",
+    "uart.h": "c",
+    "stdio.h": "c",
+    "pico.h": "c",
+    "gpio.h": "c",
+    "irq.h": "c",
+    "critical_section.h": "c"
   }
 }
