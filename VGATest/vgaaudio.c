@@ -9,7 +9,7 @@
 #define FILE_LEN_BYTES 36171776
 
 #define SDRING_INDEX_MASK_HALFWORDS ((1 << (SDRING_BUF_LOG_SIZE_BYTES - 1)) - 1)
-#define SAMPLES_PER_BUFFER (128 * 1)
+#define SAMPLES_PER_BUFFER (96)
 
 static struct audio_buffer_pool *internal_audio_init() {
 
@@ -26,7 +26,7 @@ static struct audio_buffer_pool *internal_audio_init() {
 
     struct audio_buffer_pool *producer_pool = 
         audio_new_producer_pool(&producer_format, 
-                                24,
+                                48,
                                 SAMPLES_PER_BUFFER);
     
     bool __unused ok;
@@ -52,9 +52,12 @@ static struct audio_buffer_pool *internal_audio_init() {
 
 static struct audio_buffer_pool *producer_pool;
 
+uint32_t audio_buffers_transferred = 0;
+
 void audio_reset()
 {
-  sdring_set_stream(1, START_SECTOR, FILE_LEN_BYTES, true);
+  audio_buffers_transferred = 0;
+  sdring_set_stream(1, START_SECTOR, FILE_LEN_BYTES, true, true);
 }
 
 void audio_init()
@@ -62,28 +65,31 @@ void audio_init()
   producer_pool = internal_audio_init();
 }
 
-void audio_transfer()
+void audio_transfer(bool one_buffer_only)
 {
-    const int32_t vol = 10;
+    while (sdring_words_available(1) >= SAMPLES_PER_BUFFER)
+    {
+        struct audio_buffer *buffer = take_audio_buffer(producer_pool, false);
+        if (!buffer)
+            return;
 
-    if (sdring_words_available(1) < SAMPLES_PER_BUFFER)
-        return;
+        uint16_t* pcm_data_ptr = (uint16_t*)sdring_buffer_1;
 
-    struct audio_buffer *buffer = take_audio_buffer(producer_pool, false);
-    if (!buffer)
-        return;
+        uint32_t sdring_idx = sdring_get_data_in_ringbuffer_blocking(1, buffer->max_sample_count) << 1;
+        assert(buffer->buffer->size >= sizeof(uint16_t) * buffer->max_sample_count * 2);
+        int16_t *samples = (int16_t*)buffer->buffer->bytes;
+        for (uint i = 0; i < buffer->max_sample_count * 2; i++) {
+            int16_t sample = pcm_data_ptr[(sdring_idx + i) & SDRING_INDEX_MASK_HALFWORDS];
+            samples[i] = sample >> 5u;
+        }
+        sdring_release_ringbuffer(1);
 
-    uint16_t* pcm_data_ptr = (uint16_t*)sdring_buffer_1;
+        buffer->sample_count = buffer->max_sample_count;
+        give_audio_buffer(producer_pool, buffer);
 
-    uint32_t sdring_idx = sdring_get_data_in_ringbuffer_blocking(1, buffer->max_sample_count) << 1;
-    assert(buffer->buffer->size >= sizeof(uint16_t) * buffer->max_sample_count * 2);
-    int16_t *samples = (int16_t*)buffer->buffer->bytes;
-    for (uint i = 0; i < buffer->max_sample_count * 2; i++) {
-        int16_t sample = pcm_data_ptr[(sdring_idx + i) & SDRING_INDEX_MASK_HALFWORDS];
-        samples[i] = (vol * sample) >> 8u;
+        ++audio_buffers_transferred;
+
+        if (one_buffer_only)
+            break;
     }
-    sdring_release_ringbuffer(1);
-
-    buffer->sample_count = buffer->max_sample_count;
-    give_audio_buffer(producer_pool, buffer);
 }

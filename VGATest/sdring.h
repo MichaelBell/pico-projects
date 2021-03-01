@@ -11,10 +11,10 @@ void sdring_init(bool byte_swap);
 
 // Set the data to stream and optionally start streaming.
 // If start_streaming is false then start the stream by calling reset_stream.
-void sdring_set_stream(uint32_t stream_idx, uint32_t start_block, uint32_t len_bytes, bool start_streaming);
+void sdring_set_stream(uint32_t stream_idx, uint32_t start_block, uint32_t len_bytes, bool start_streaming, bool prime_buffer);
 
 // Reset the stream to the beginning.
-void sdring_reset_stream(uint32_t stream_idx);
+void sdring_reset_stream(uint32_t stream_idx, bool prime_buffer);
 
 // Whether the end of the file has been reached.
 bool sdring_eof(uint32_t stream_idx);

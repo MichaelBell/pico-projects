@@ -4,6 +4,7 @@
 #include "pico/sd_card.h"
 #include "hardware/dma.h"
 #include "hardware/pio.h"
+#include "pico/sync.h"
 
 #include "sdring.h"
 
@@ -41,18 +42,45 @@ typedef struct stream_data {
 
 stream_data_t streams[2];
 
+static critical_section_t transfer_cs;
+static volatile bool transfer_starting = false;
+
 #define STRM streams[stream_idx]
 
 bool sdring_eof(uint32_t stream_idx)
 {
-  return ((STRM.next_block_to_request - STRM.source_start_block) << 9) >= STRM.source_data_len &&
-          STRM.start_write_addr == STRM.target_write_addr;
+  return (STRM.next_block_to_request >= STRM.source_end_block) &&
+         (STRM.start_write_addr == STRM.target_write_addr);
 }
 
 static void sdring_start_transfer(uint32_t stream_idx, bool start_other_stream_if_idle)
 {
-  if (!sd_scatter_read_complete(NULL, NULL))
+//  if (!sd_scatter_read_complete(NULL, NULL) || transfer_starting)
+  if (transfer_starting)
     return;
+
+#if 1
+  // Use the critical section to protect false -> true transition
+  // of the transfer starting flag.
+  critical_section_enter_blocking(&transfer_cs);
+  if (transfer_starting)
+  {
+    critical_section_exit(&transfer_cs);
+    return;
+  }
+  transfer_starting = true;
+  critical_section_exit(&transfer_cs);
+
+  if (!sd_scatter_read_complete(NULL, NULL))
+  {
+    transfer_starting = false;
+    return;
+  }
+#else
+  // Strictly I believe the above is required, but this is faster and
+  // seems to work in practice, remember this is a hobby project!
+  transfer_starting = true;
+#endif
 
   // Previous transfers are complete
   streams[0].start_write_addr = streams[0].target_write_addr;
@@ -60,37 +88,45 @@ static void sdring_start_transfer(uint32_t stream_idx, bool start_other_stream_i
 
   if (sdring_eof(stream_idx)) 
   {
+    transfer_starting = false;
     if (start_other_stream_if_idle)
       sdring_start_transfer(stream_idx ^ 1, false);
     return;
   }
 
   // Set window for next transfer
-  uint32_t next_idx = STRM.target_write_addr - STRM.buffer;
-  next_idx = (next_idx + (STRM.blocks_per_read << 7)) & SDRING_BUF_IDX_MASK;
+  uint32_t target_write_idx = STRM.target_write_addr - STRM.buffer;
+
+  // Read
+  uint32_t blocks_to_read = MIN(STRM.blocks_per_read, STRM.source_end_block - STRM.next_block_to_request);
 
   // Don't catch up with the read pointer.
   uint32_t read_idx = STRM.prev_buffer_ptr - STRM.buffer;
-  uint32_t space_available = (read_idx - next_idx) & SDRING_BUF_IDX_MASK;
-  if (space_available <= (STRM.blocks_per_read << 7))
+  uint32_t space_available = (read_idx - target_write_idx) & SDRING_BUF_IDX_MASK;
+  if (space_available <= (blocks_to_read << 7))
   {
+    transfer_starting = false;
     if (start_other_stream_if_idle)
       sdring_start_transfer(stream_idx ^ 1, false);
     return;
   }
 
-  // Read
-  uint32_t blocks_to_read = MIN(STRM.blocks_per_read, STRM.source_end_block - STRM.next_block_to_request);
+  target_write_idx = (target_write_idx + (blocks_to_read << 7)) & SDRING_BUF_IDX_MASK;
+
   sd_set_byteswap_on_read(STRM.byte_swap);
   sd_readblocks_async(STRM.start_write_addr, STRM.next_block_to_request, blocks_to_read);
-  STRM.target_write_addr = STRM.buffer + next_idx;
-  STRM.next_block_to_request += STRM.blocks_per_read;
+  STRM.target_write_addr = STRM.buffer + target_write_idx;
+  STRM.next_block_to_request += blocks_to_read;
   STRM.sectors_stolen = 0;
+
+  transfer_starting = false;
 }
 
 // Configure the flash streaming resources
 void sdring_init(bool byte_swap)
 {
+  critical_section_init(&transfer_cs);
+
   sd_init_4pins();
   sd_set_clock_divider(2);
   sd_set_byteswap_on_read(byte_swap);
@@ -124,18 +160,18 @@ void sdring_init(bool byte_swap)
 
 // Set the data to stream and optionally start streaming.
 // If start_streaming is false then start the stream by calling reset_stream.
-void sdring_set_stream(uint32_t stream_idx, uint32_t start_block, uint32_t len_bytes, bool start_streaming)
+void sdring_set_stream(uint32_t stream_idx, uint32_t start_block, uint32_t len_bytes, bool start_streaming, bool prime_buffer)
 {
   STRM.source_start_block = start_block;
-  STRM.source_end_block = start_block + (len_bytes + 511) / 512;
+  STRM.source_end_block = start_block + (len_bytes / 512) + 1;
   STRM.source_data_len = len_bytes;
 
   if (start_streaming)
-    sdring_reset_stream(stream_idx);
+    sdring_reset_stream(stream_idx, prime_buffer);
 }
 
 // Reset the stream to the beginning.
-void sdring_reset_stream(uint32_t stream_idx)
+void sdring_reset_stream(uint32_t stream_idx, bool prime_buffer)
 {
   // Reset state
   STRM.next_block_to_request = STRM.source_start_block;
@@ -151,7 +187,10 @@ void sdring_reset_stream(uint32_t stream_idx)
   }
 
   // Kick off first read
+  uint32_t normal_blocks_per_read = STRM.blocks_per_read;
+  STRM.blocks_per_read = 64;
   sdring_start_transfer(stream_idx, false);
+  STRM.blocks_per_read = normal_blocks_per_read;
 }
 
 uint32_t sdring_words_available(uint32_t stream_idx)
@@ -159,15 +198,20 @@ uint32_t sdring_words_available(uint32_t stream_idx)
   int sectors_read = 0;
   if (sd_scatter_read_complete(NULL, &sectors_read))
   {
+    // No transfer currently running, start a new one.
     assert(STRM.start_write_addr != STRM.prev_buffer_ptr);
     sdring_start_transfer(stream_idx, false);
   }
   else if (STRM.target_write_addr != STRM.start_write_addr &&
             sectors_read > STRM.sectors_stolen)
   {
+    // There is a transfer running for this stream, update how
+    // many sectors we can "steal", i.e. read ahead into because
+    // the running transfer has already written them.
     uint32_t new_sectors = sectors_read - STRM.sectors_stolen;
     STRM.sectors_stolen += new_sectors;
     assert(STRM.sectors_stolen <= 32);
+    //__breakpoint();
     STRM.start_write_addr += new_sectors * 128;
   }
   return (STRM.start_write_addr - STRM.buffer_ptr) & SDRING_BUF_IDX_MASK;

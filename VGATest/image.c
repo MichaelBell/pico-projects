@@ -284,8 +284,17 @@ static void read_lines(uint32_t offset)
   compressed_bits[0] = 0;
   compressed_bit_len[0] = 0;
 
-  for (int channel_idx = 0; channel_idx < 3 && !abort_frame; ++channel_idx)
+  for (int channel_idx = 0; channel_idx < 3; ++channel_idx)
   {
+    if (abort_frame)
+    {
+      if (channel_idx == 0)
+      {
+        core1_row_done = display_row;
+      }
+      break;
+    }
+
     uint32_t len = get_bits(13);
     //__breakpoint();
 
@@ -410,7 +419,7 @@ static void read_lines(uint32_t offset)
   }
 
 #ifdef GREEN_ON_CORE1
-  while (display_row != core1_row_done);
+  while (display_row != core1_row_done && !abort_frame);
 #endif
 
   sdring_release_ringbuffer(0);
@@ -469,10 +478,6 @@ static void __time_critical_func(setup_next_line_ptr_and_len)()
       channel[i].ptr = &zero;
     }
   }
-
-  // If we've finished reading the image, load up more audio
-  if (sdring_eof(0))
-    multicore_fifo_push_blocking(CORE1_CMD_TRANSFER_AUDIO);
 }
 
 #define vga_red_dma   5
@@ -487,8 +492,11 @@ static void __time_critical_func(transfer_next_line)()
   dma_channel_transfer_from_buffer_now(vga_red_dma, red_chan.ptr, red_chan.len);
   dma_channel_transfer_from_buffer_now(vga_green_dma, green_chan.ptr, green_chan.len);
   dma_channel_transfer_from_buffer_now(vga_blue_dma, blue_chan.ptr, blue_chan.len);
-  if (++display_row < DISPLAY_ROWS) 
+  if (display_row + 1 < DISPLAY_ROWS) 
+  {
+    ++display_row;
     setup_next_line_ptr_and_len();
+  }
 }
 
 void __time_critical_func(dma_complete_handler)() 
@@ -605,6 +613,8 @@ void setup_interpolators()
 
 #include "image_lens.h"
 
+static uint64_t total_time = 0;
+
 void __time_critical_func(display_loop)() 
 {
   uint32_t frame_number = 0;
@@ -631,6 +641,8 @@ void __time_critical_func(display_loop)()
       {
         case CORE0_CMD_INIT_FRAME:
         {
+          while (core1_row_done != display_row);
+
           //data_pos = image_dat;
           display_row = 0;
           image_row = 0;
@@ -639,22 +651,35 @@ void __time_critical_func(display_loop)()
 
           irq_set_enabled(DMA_IRQ_0, false);
 
-          uint32_t image_idx = (frame_number++ / FRAMES_BEFORE_CHANGE) % NUM_IMAGES;
-          if (image_idx == 0) {
+          if (frame_number++ == 0) {
+            // Reset audio, don't display this frame to get audio buffers full
             audio_reset();
+            sdring_set_stream(0, 0, 0, false, false);
+            core1_row_done = 0;
+            abort_frame = true;
+
+            // Prime the audio.
+            //absolute_time_t start_time = get_absolute_time();
+            while (audio_buffers_transferred < 32)
+              audio_transfer(false);
+            //total_time = absolute_time_diff_us(start_time, get_absolute_time());
+            //__breakpoint();
           }
-          //audio_transfer();
+          else
+          {
+            uint32_t image_idx = (frame_number - 1) / FRAMES_BEFORE_CHANGE;
+            if (frame_number == NUM_IMAGES * FRAMES_BEFORE_CHANGE) frame_number = 0;
 
-          //uint32_t image_idx = 900 + ((frame_number++ / FRAMES_BEFORE_CHANGE) % 200);
-          sdring_set_stream(0, FIRST_IMAGE_OFFSET + (IMAGE_OFFSET_GAP * image_idx), image_lengths[image_idx], true);
-          read_compression_tables();
-          setup_next_line_ptr_and_len();
-          
-          dma_hw->ints0 = vga_dma_channel_mask;
-          complete_dma_channel_bits = 0;
-          transfer_next_line();
+            sdring_set_stream(0, FIRST_IMAGE_OFFSET + (IMAGE_OFFSET_GAP * image_idx), image_lengths[image_idx], true, true);
+            read_compression_tables();
+            setup_next_line_ptr_and_len();
+            
+            dma_hw->ints0 = vga_dma_channel_mask;
+            complete_dma_channel_bits = 0;
+            transfer_next_line();
 
-          irq_set_enabled(DMA_IRQ_0, true);
+            irq_set_enabled(DMA_IRQ_0, true);
+          }
 
           break;
         }
@@ -675,6 +700,8 @@ void __time_critical_func(display_loop)()
 void __time_critical_func(display_core1_loop)()
 {
   setup_interpolators();
+  core1_row_done = 0;
+
   while(1) 
   {
       uint cmd = multicore_fifo_pop_blocking();
@@ -690,10 +717,15 @@ void __time_critical_func(display_core1_loop)()
           }
           core1_row_done = display_row;
 
+          if (sdring_eof(0) && !abort_frame)
+            audio_transfer(true);
+
           break;
+#if 0
         case CORE1_CMD_TRANSFER_AUDIO:
           audio_transfer();
           break;
+#endif
         default:
           __breakpoint();
       }
@@ -708,7 +740,6 @@ void __no_inline_not_in_flash_func(display_start_new_frame)()
 void __no_inline_not_in_flash_func(display_end_frame)() 
 {
   abort_frame = true;
-  core1_row_done = display_row;
   irq_set_enabled(DMA_IRQ_0, false);
   dma_channel_abort(vga_red_dma);
   dma_channel_abort(vga_green_dma);
