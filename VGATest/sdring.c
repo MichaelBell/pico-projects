@@ -50,9 +50,6 @@ typedef struct stream_data {
 
 stream_data_t streams[2];
 
-static critical_section_t transfer_cs;
-static volatile bool transfer_starting = false;
-
 #define STRM streams[stream_idx]
 
 bool sdring_eof(uint32_t stream_idx)
@@ -63,32 +60,16 @@ bool sdring_eof(uint32_t stream_idx)
 
 static void sdring_start_transfer(uint32_t stream_idx, bool start_other_stream_if_idle)
 {
-//  if (!sd_scatter_read_complete(NULL, NULL) || transfer_starting)
-  if (transfer_starting)
-    return;
+  auto_init_mutex(transfer_mutex);
 
-#if 1
-  // Use the critical section to protect false -> true transition
-  // of the transfer starting flag.
-  critical_section_enter_blocking(&transfer_cs);
-  if (transfer_starting)
-  {
-    critical_section_exit(&transfer_cs);
+  if (!mutex_try_enter(&transfer_mutex, NULL))
     return;
-  }
-  transfer_starting = true;
-  critical_section_exit(&transfer_cs);
 
   if (!sd_scatter_read_complete(NULL, NULL))
   {
-    transfer_starting = false;
+    mutex_exit(&transfer_mutex);
     return;
   }
-#else
-  // Strictly I believe the above is required, but this is faster and
-  // seems to work in practice, remember this is a hobby project!
-  transfer_starting = true;
-#endif
 
   // Previous transfers are complete
   streams[0].start_write_addr = streams[0].target_write_addr;
@@ -96,7 +77,7 @@ static void sdring_start_transfer(uint32_t stream_idx, bool start_other_stream_i
 
   if (sdring_eof(stream_idx)) 
   {
-    transfer_starting = false;
+    mutex_exit(&transfer_mutex);
     if (start_other_stream_if_idle)
       sdring_start_transfer(stream_idx ^ 1, false);
     return;
@@ -122,7 +103,7 @@ static void sdring_start_transfer(uint32_t stream_idx, bool start_other_stream_i
     }
     else
     {
-      transfer_starting = false;
+      mutex_exit(&transfer_mutex);
       if (start_other_stream_if_idle)
         sdring_start_transfer(stream_idx ^ 1, false);
       return;
@@ -160,7 +141,7 @@ static void sdring_start_transfer(uint32_t stream_idx, bool start_other_stream_i
   STRM.next_block_to_request += blocks_to_read;
   STRM.sectors_stolen = 0;
 
-  transfer_starting = false;
+  mutex_exit(&transfer_mutex);
 }
 
 static void sdring_configure_ctrl_words(uint32_t stream_idx)
@@ -180,8 +161,6 @@ static void sdring_configure_ctrl_words(uint32_t stream_idx)
 // Configure the flash streaming resources
 void sdring_init(bool byte_swap)
 {
-  critical_section_init(&transfer_cs);
-
   sd_init_4pins();
   sd_set_clock_divider(2);
   sd_set_byteswap_on_read(byte_swap);
