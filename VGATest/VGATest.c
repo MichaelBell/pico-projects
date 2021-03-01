@@ -16,17 +16,7 @@
 #include "vga.pio.h"
 
 #include "sdring.h"
-
-const uint CAPTURE_PIN_BASE = 0;
-const uint CAPTURE_PIN_COUNT = 32;
-const uint CAPTURE_N_SAMPLES = 200;
-
-void logic_analyser_init(PIO pio, uint sm, uint pin_base, uint pin_count, float div);
-void logic_analyser_arm(PIO pio, uint sm, uint dma_chan, uint32_t *capture_buf, size_t capture_size_words,
-                        uint trigger_pin, bool trigger_level);
-void print_capture_buf(const uint32_t *buf, uint pin_base, uint pin_count, uint32_t n_samples);
-
-const uint analyser_sm = 3;
+#include "vgaaudio.h"
 
 //#define RES_640_480_DOUBLE
 //#define RES_720p_SINGLE
@@ -231,6 +221,8 @@ void vga_entry() {
     irq_set_exclusive_handler(PIO0_IRQ_1, timing_isr);
     irq_set_priority(PIO0_IRQ_1, 0xC0);
     irq_set_enabled(PIO0_IRQ_1, true);
+
+    audio_init();
 
     // Notify setup is complete
     multicore_fifo_push_blocking(0);

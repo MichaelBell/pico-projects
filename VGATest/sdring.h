@@ -11,10 +11,16 @@ void sdring_init(bool byte_swap);
 
 // Set the data to stream and optionally start streaming.
 // If start_streaming is false then start the stream by calling reset_stream.
-void sdring_set_stream(uint32_t start_block, uint32_t len_bytes, bool start_streaming);
+void sdring_set_stream(uint32_t stream_idx, uint32_t start_block, uint32_t len_bytes, bool start_streaming);
 
 // Reset the stream to the beginning.
-void sdring_reset_stream();
+void sdring_reset_stream(uint32_t stream_idx);
+
+// Whether the end of the file has been reached.
+bool sdring_eof(uint32_t stream_idx);
+
+// Get number of words available to read
+uint32_t sdring_words_available(uint32_t stream_idx);
 
 // Request a fixed amount of data from flash and access in ring buffer.
 // The flash ring buffer is aligned and you may need to wrap the returned index
@@ -24,9 +30,10 @@ void sdring_reset_stream();
 // Blocks until the requested amount of data has been read from flash.
 // Calling this a subsequent time does *not* release the data, it must be
 // released explicitly.
-uint32_t sdring_get_data_in_ringbuffer_blocking(uint32_t len_req_in_words);
+uint32_t sdring_get_data_in_ringbuffer_blocking(uint32_t stream_idx, uint32_t len_req_in_words);
 
 // Release all data previously fetched with ringbuffer_blocking.
-void sdring_release_ringbuffer();
+void sdring_release_ringbuffer(uint32_t stream_idx);
 
-extern uint32_t sdring_buffer[SDRING_BUF_LEN_WORDS] __attribute__((aligned(1 << SDRING_BUF_LOG_SIZE_BYTES)));
+extern uint32_t sdring_buffer_0[SDRING_BUF_LEN_WORDS] __attribute__((aligned(1 << SDRING_BUF_LOG_SIZE_BYTES)));
+extern uint32_t sdring_buffer_1[SDRING_BUF_LEN_WORDS] __attribute__((aligned(1 << SDRING_BUF_LOG_SIZE_BYTES)));

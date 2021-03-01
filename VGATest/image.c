@@ -68,9 +68,11 @@ static volatile uint16_t core1_row_done = -1;
 
 // Commands to core 0
 #define CORE0_CMD_INIT_FRAME               1
+#define CORE0_CMD_END_FRAME                2
 
 // Commands to core 1
-#define CORE1_CMD_DECOMPRESS_GREEN_CHANNEL 2
+#define CORE1_CMD_DECOMPRESS_GREEN_CHANNEL 10
+#define CORE1_CMD_TRANSFER_AUDIO           11
 
 #define GRAYSCALE_BIT (1u << 31)
 
@@ -141,12 +143,12 @@ static void read_compression_tables()
   {
     for (int j = 0; j < 2; ++j)
     {
-      interp1->accum[0] = sdring_get_data_in_ringbuffer_blocking((SYMBOLS_IN_TABLE * 10) / 32) << 5;
+      interp1->accum[0] = sdring_get_data_in_ringbuffer_blocking(0, (SYMBOLS_IN_TABLE * 10) / 32) << 5;
 
       for (int k = 0; k < SYMBOLS_IN_TABLE; ++k)
         channel[i].symbol_table[j][k] = get_bits(10);
       
-      sdring_release_ringbuffer();
+      sdring_release_ringbuffer(0);
     }
   }
 }
@@ -278,7 +280,7 @@ inline static void __attribute__((always_inline)) run_inner_loop(int channel_idx
 
 static void read_lines(uint32_t offset)
 {
-  interp1->accum[0] = sdring_get_data_in_ringbuffer_blocking(1) << 5;
+  interp1->accum[0] = sdring_get_data_in_ringbuffer_blocking(0, 1) << 5;
   compressed_bits[0] = 0;
   compressed_bit_len[0] = 0;
 
@@ -293,7 +295,7 @@ static void read_lines(uint32_t offset)
     interp1->base[1] = -(cur_bit_idx + len);
 
     // Fetch enough data.
-    sdring_get_data_in_ringbuffer_blocking((len - compressed_bit_len[0] + 31) / 32);
+    sdring_get_data_in_ringbuffer_blocking(0, (len - compressed_bit_len[0] + 31) / 32);
     
 #define GREEN_ON_CORE1
 #ifdef GREEN_ON_CORE1
@@ -305,15 +307,15 @@ static void read_lines(uint32_t offset)
       uint32_t green_bit_offset = (cur_bit_idx + len) & ((1 << (SDRING_BUF_LOG_SIZE_BYTES + 3)) - 1);
       int32_t bits_left_in_cur_word = 32 - ((green_bit_offset) & 0x1f);
       uint32_t bits_from_cur_word = 0;
-      bits_from_cur_word = sdring_buffer[green_bit_offset >> 5] << ((green_bit_offset) & 0x1f);
+      bits_from_cur_word = sdring_buffer_0[green_bit_offset >> 5] << ((green_bit_offset) & 0x1f);
 
       uint32_t green_len = bits_from_cur_word >> (32 - 13);
       bits_from_cur_word <<= 13;
 
       if (bits_left_in_cur_word < 13) {
-        sdring_get_data_in_ringbuffer_blocking(1);
+        sdring_get_data_in_ringbuffer_blocking(0, 1);
         uint32_t next_idx = ((green_bit_offset >> 5) + 1) & SDRING_BUF_IDX_MASK;
-        bits_from_cur_word = sdring_buffer[next_idx];
+        bits_from_cur_word = sdring_buffer_0[next_idx];
         bits_left_in_cur_word = (32 - (13 - bits_left_in_cur_word));
         green_len |= bits_from_cur_word >> bits_left_in_cur_word;
         bits_from_cur_word <<= (32 - bits_left_in_cur_word);
@@ -323,7 +325,7 @@ static void read_lines(uint32_t offset)
         bits_left_in_cur_word -= 13;
       }
 
-      sdring_get_data_in_ringbuffer_blocking((green_len - bits_left_in_cur_word + 31) / 32);
+      sdring_get_data_in_ringbuffer_blocking(0, (green_len - bits_left_in_cur_word + 31) / 32);
 
       green_bit_offset = (green_bit_offset + 13);
       blue_bit_offset = green_bit_offset + green_len;
@@ -390,7 +392,7 @@ static void read_lines(uint32_t offset)
       // Ensure we have enough bits to read the length.
       uint32_t bits_left_in_cur_word = 32 - (interp1->accum[0] & 0x1f);
       if (bits_left_in_cur_word == 32) bits_left_in_cur_word = 0;
-      if (bits_left_in_cur_word < 13) sdring_get_data_in_ringbuffer_blocking(1);
+      if (bits_left_in_cur_word < 13) sdring_get_data_in_ringbuffer_blocking(0, 1);
     }
 
 #ifdef GREEN_ON_CORE1
@@ -411,7 +413,7 @@ static void read_lines(uint32_t offset)
   while (display_row != core1_row_done);
 #endif
 
-  sdring_release_ringbuffer();
+  sdring_release_ringbuffer(0);
 }
 
 // This streams from flash
@@ -443,7 +445,7 @@ static void __time_critical_func(setup_next_line_ptr_and_len)()
     }
   }
 
-  else if (image_row < IMAGE_ROWS) // /*&& (display_row & 1) == 0*/ && display_row >= 80 && display_row < DISPLAY_ROWS - 80)
+  else if (image_row < IMAGE_ROWS) // /*&& (display_row & 1) == 0*/ && display_row >= 40) // && display_row < DISPLAY_ROWS - 20)
   {
     bufnum ^= 1;
     ++image_row;
@@ -467,6 +469,10 @@ static void __time_critical_func(setup_next_line_ptr_and_len)()
       channel[i].ptr = &zero;
     }
   }
+
+  // If we've finished reading the image, load up more audio
+  if (sdring_eof(0))
+    multicore_fifo_push_blocking(CORE1_CMD_TRANSFER_AUDIO);
 }
 
 #define vga_red_dma   5
@@ -582,7 +588,7 @@ void setup_interpolators()
   interp_config_set_shift(&cfg, 3);
   interp_config_set_mask(&cfg, 2, SDRING_BUF_LOG_SIZE_BYTES - 1);
   interp_set_config(interp1, 0, &cfg);
-  interp1->base[0] = (uintptr_t)sdring_buffer;
+  interp1->base[0] = (uintptr_t)sdring_buffer_0;
 
   // interp1 lane 1 indicates the number of bits left to read
   // base1 is set to minus the number of bits that will have been read at
@@ -603,9 +609,7 @@ void __time_critical_func(display_loop)()
 {
   uint32_t frame_number = 0;
 
-  //audio_init();
   sdring_init(true);
-
   setup_dma_channels();
   setup_interpolators();
 
@@ -637,12 +641,12 @@ void __time_critical_func(display_loop)()
 
           uint32_t image_idx = (frame_number++ / FRAMES_BEFORE_CHANGE) % NUM_IMAGES;
           if (image_idx == 0) {
-            //audio_reset();
+            audio_reset();
           }
           //audio_transfer();
 
           //uint32_t image_idx = 900 + ((frame_number++ / FRAMES_BEFORE_CHANGE) % 200);
-          sdring_set_stream(FIRST_IMAGE_OFFSET + (IMAGE_OFFSET_GAP * image_idx), image_lengths[image_idx], true);
+          sdring_set_stream(0, FIRST_IMAGE_OFFSET + (IMAGE_OFFSET_GAP * image_idx), image_lengths[image_idx], true);
           read_compression_tables();
           setup_next_line_ptr_and_len();
           
@@ -652,6 +656,11 @@ void __time_critical_func(display_loop)()
 
           irq_set_enabled(DMA_IRQ_0, true);
 
+          break;
+        }
+        case CORE0_CMD_END_FRAME:
+        {
+          //audio_transfer();
           break;
         }
         default:
@@ -682,6 +691,9 @@ void __time_critical_func(display_core1_loop)()
           core1_row_done = display_row;
 
           break;
+        case CORE1_CMD_TRANSFER_AUDIO:
+          audio_transfer();
+          break;
         default:
           __breakpoint();
       }
@@ -702,4 +714,5 @@ void __no_inline_not_in_flash_func(display_end_frame)()
   dma_channel_abort(vga_green_dma);
   dma_channel_abort(vga_blue_dma);
   dma_hw->ints0 = vga_dma_channel_mask;
+  //multicore_fifo_push_blocking(CORE0_CMD_END_FRAME);
 }

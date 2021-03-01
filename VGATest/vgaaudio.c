@@ -3,15 +3,13 @@
 #include "hardware/dma.h"
 
 #include "pico/audio_i2s.h"
-#include "pico/sd_card.h"
+#include "sdring.h"
 
 #define START_SECTOR 3200000
 #define FILE_LEN_BYTES 36171776
 
-static uint32_t sector_next;
-
-#define SECTORS_PER_READ 6
-#define SAMPLES_PER_BUFFER (128 * SECTORS_PER_READ)
+#define SDRING_INDEX_MASK_HALFWORDS ((1 << (SDRING_BUF_LOG_SIZE_BYTES - 1)) - 1)
+#define SAMPLES_PER_BUFFER (128 * 1)
 
 static struct audio_buffer_pool *internal_audio_init() {
 
@@ -26,8 +24,11 @@ static struct audio_buffer_pool *internal_audio_init() {
             .sample_stride = 4
     };
 
-    struct audio_buffer_pool *producer_pool = audio_new_producer_pool(&producer_format, PICO_AUDIO_I2S_BUFFERS_PER_CHANNEL,
-                                                                      SAMPLES_PER_BUFFER); // todo correct size
+    struct audio_buffer_pool *producer_pool = 
+        audio_new_producer_pool(&producer_format, 
+                                24,
+                                SAMPLES_PER_BUFFER);
+    
     bool __unused ok;
     const struct audio_format *output_format;
     struct audio_i2s_config config = {
@@ -53,39 +54,36 @@ static struct audio_buffer_pool *producer_pool;
 
 void audio_reset()
 {
-  sector_next = START_SECTOR;
+  sdring_set_stream(1, START_SECTOR, FILE_LEN_BYTES, true);
 }
 
 void audio_init()
 {
   producer_pool = internal_audio_init();
-  audio_reset();
 }
 
 void audio_transfer()
 {
-    const int32_t vol = 20;
+    const int32_t vol = 10;
 
-    {
-        // Wait for any previous transfer to stop.
-        if (!sd_scatter_read_complete(NULL, NULL)) return;
+    if (sdring_words_available(1) < SAMPLES_PER_BUFFER)
+        return;
 
-        struct audio_buffer *buffer = take_audio_buffer(producer_pool, false);
-        if (!buffer)
-            return;
+    struct audio_buffer *buffer = take_audio_buffer(producer_pool, false);
+    if (!buffer)
+        return;
 
-        sd_set_byteswap_on_read(false);
-        sd_readblocks_sync((uint32_t*)buffer->buffer->bytes, sector_next, SECTORS_PER_READ);
-        sector_next += SECTORS_PER_READ;
-        sd_set_byteswap_on_read(true);
+    uint16_t* pcm_data_ptr = (uint16_t*)sdring_buffer_1;
 
-        //__breakpoint();
-
-        int16_t *samples = (int16_t*)buffer->buffer->bytes;
-        for (uint i = 0; i < buffer->max_sample_count * 2; i++) {
-            samples[i] = (vol * samples[i]) >> 8u;
-        }
-        buffer->sample_count = buffer->max_sample_count;
-        give_audio_buffer(producer_pool, buffer);
+    uint32_t sdring_idx = sdring_get_data_in_ringbuffer_blocking(1, buffer->max_sample_count) << 1;
+    assert(buffer->buffer->size >= sizeof(uint16_t) * buffer->max_sample_count * 2);
+    int16_t *samples = (int16_t*)buffer->buffer->bytes;
+    for (uint i = 0; i < buffer->max_sample_count * 2; i++) {
+        int16_t sample = pcm_data_ptr[(sdring_idx + i) & SDRING_INDEX_MASK_HALFWORDS];
+        samples[i] = (vol * sample) >> 8u;
     }
+    sdring_release_ringbuffer(1);
+
+    buffer->sample_count = buffer->max_sample_count;
+    give_audio_buffer(producer_pool, buffer);
 }
