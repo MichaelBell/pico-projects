@@ -23,7 +23,8 @@
 
 static uint32_t* data_pos;
 
-#define IMAGE_ROWS 720
+#define IMAGE_ROWS 675
+#define IMAGE_PAD_TOP 20
 
 #if 0
 #define DISPLAY_COLS 640
@@ -452,9 +453,9 @@ static void __time_critical_func(setup_next_line_ptr_and_len)()
         channel[i].ptr = &zero;
       }
     }
+    core1_row_done = display_row;
   }
-
-  else if (image_row < IMAGE_ROWS) // /*&& (display_row & 1) == 0*/ && display_row >= 40) // && display_row < DISPLAY_ROWS - 20)
+  else if (image_row < IMAGE_ROWS && display_row >= IMAGE_PAD_TOP) // && display_row < DISPLAY_ROWS - 20)
   {
     bufnum ^= 1;
     ++image_row;
@@ -472,6 +473,7 @@ static void __time_critical_func(setup_next_line_ptr_and_len)()
   }
   else
   {
+    core1_row_done = display_row;
     for (int i = 0; i < 3; ++i)
     {
       channel[i].len = 1;
@@ -608,7 +610,7 @@ void setup_interpolators()
 }
 
 #define FRAMES_BEFORE_CHANGE 4
-#define FIRST_IMAGE_OFFSET 111000
+#define FIRST_IMAGE_OFFSET 4001000
 #define IMAGE_OFFSET_GAP 1000
 
 #include "image_lens.h"

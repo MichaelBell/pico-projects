@@ -5,8 +5,8 @@
 #include "pico/audio_i2s.h"
 #include "sdring.h"
 
-#define START_SECTOR 3200000
-#define FILE_LEN_BYTES 36171776
+#define START_SECTOR 6900000
+#define FILE_LEN_BYTES 35127300
 
 #define SDRING_INDEX_MASK_HALFWORDS ((1 << (SDRING_BUF_LOG_SIZE_BYTES - 1)) - 1)
 #define SAMPLES_PER_BUFFER (96)

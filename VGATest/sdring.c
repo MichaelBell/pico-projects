@@ -222,6 +222,12 @@ void sdring_reset_stream(uint32_t stream_idx, bool prime_buffer)
   STRM.prev_buffer_ptr = STRM.buffer + SDRING_BUF_LEN_WORDS - 1;
   STRM.buffer_ptr = STRM.buffer;
 
+  // Wait for any active transfers to complete.
+  while (!sd_scatter_read_complete(NULL, NULL))
+  {
+    //__breakpoint();
+  }
+
   if (STRM.end_ctrl_word_idx < (1 << (SDRING_BUF_LOG_SIZE_BYTES - 8)))
   {
     sdring_ctrl_words[stream_idx][STRM.end_ctrl_word_idx] = (uint32_t)(STRM.buffer + ((STRM.end_ctrl_word_idx) << 6));
@@ -233,12 +239,6 @@ void sdring_reset_stream(uint32_t stream_idx, bool prime_buffer)
     {
       sdring_ctrl_words[stream_idx][STRM.end_ctrl_word_idx + 1] = 128;
     }
-  }
-
-  // Wait for any active transfers to complete.
-  while (!sd_scatter_read_complete(NULL, NULL))
-  {
-    //__breakpoint();
   }
 
   // Kick off first read

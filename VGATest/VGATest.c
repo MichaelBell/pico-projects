@@ -61,17 +61,19 @@
 #if 1
 // Timings for 720p at double sys clock
 #define TIMING_V_PULSE    5
-#define TIMING_V_BACK    (19 + TIMING_V_PULSE)
+#define TIMING_V_BACK    (21 + TIMING_V_PULSE)
 #define TIMING_V_DISPLAY (720 + TIMING_V_BACK)
 #define TIMING_V_FRONT   (4 + TIMING_V_DISPLAY)
 #define TIMING_H_FRONT   (64 * 2)
-#define TIMING_H_PULSE   (128 * 2)
+#define TIMING_H_PULSE   (130 * 2)
 #define TIMING_H_BACK    (192 * 2)
 #define TIMING_H_DISPLAY (1280 * 2)
-#define CLOCK_VCO   1488
+//#define CLOCK_VCO   1488
+#define CLOCK_VCO   1500
 #define CLOCK_PD1   5
 #define CLOCK_PD2   1
-#define CLOCK_RATE  297600 * KHZ
+//#define CLOCK_RATE  297600 * KHZ
+#define CLOCK_RATE  300000 * KHZ
 #define CHANNEL_CLK_DIV 2
 #define VREG_VSEL VREG_VOLTAGE_1_15
 #else
