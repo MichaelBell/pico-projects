@@ -52,6 +52,10 @@ stream_data_t streams[2];
 
 #define STRM streams[stream_idx]
 
+auto_init_mutex(transfer_mutex);
+
+extern volatile uint32_t debug_flag;
+
 bool sdring_eof(uint32_t stream_idx)
 {
   return (STRM.next_block_to_request >= STRM.source_end_block) &&
@@ -60,7 +64,9 @@ bool sdring_eof(uint32_t stream_idx)
 
 static void sdring_start_transfer(uint32_t stream_idx, bool start_other_stream_if_idle)
 {
-  auto_init_mutex(transfer_mutex);
+  uint32_t space_available = (STRM.prev_buffer_ptr - STRM.target_write_addr) & SDRING_BUF_IDX_MASK;
+  if (space_available < (STRM.blocks_on_next_read << 6))
+    return;
 
   if (!mutex_try_enter(&transfer_mutex, NULL))
     return;
@@ -72,8 +78,9 @@ static void sdring_start_transfer(uint32_t stream_idx, bool start_other_stream_i
   }
 
   // Previous transfers are complete
-  streams[0].start_write_addr = streams[0].target_write_addr;
-  streams[1].start_write_addr = streams[1].target_write_addr;
+  //streams[0].start_write_addr = streams[0].target_write_addr;
+  //streams[1].start_write_addr = streams[1].target_write_addr;
+  STRM.start_write_addr = STRM.target_write_addr;
 
   if (sdring_eof(stream_idx)) 
   {
@@ -90,22 +97,23 @@ static void sdring_start_transfer(uint32_t stream_idx, bool start_other_stream_i
   uint32_t blocks_to_read = MIN(STRM.blocks_on_next_read, STRM.source_end_block - STRM.next_block_to_request);
 
   // Don't catch up with the read pointer.
-  uint32_t read_idx = STRM.prev_buffer_ptr - STRM.buffer;
-  uint32_t space_available = (read_idx - start_write_idx) & SDRING_BUF_IDX_MASK;
   if (space_available < (blocks_to_read << 7))
   {
-    if (blocks_to_read == STRM.blocks_per_read && (space_available >= (blocks_to_read << 6)))
+#if 1
+    if (blocks_to_read == STRM.blocks_per_read)
     {
+      assert(space_available >= (blocks_to_read << 6));
       blocks_to_read >>= 1;
 
       // Maintain alignment by doing a small read next time too.
       STRM.blocks_on_next_read = blocks_to_read;
     }
     else
+#endif
     {
       mutex_exit(&transfer_mutex);
-      if (start_other_stream_if_idle)
-        sdring_start_transfer(stream_idx ^ 1, false);
+      //if (start_other_stream_if_idle)
+      //  sdring_start_transfer(stream_idx ^ 1, false);
       return;
     }
   }
@@ -140,6 +148,8 @@ static void sdring_start_transfer(uint32_t stream_idx, bool start_other_stream_i
   STRM.target_write_addr = STRM.buffer + target_write_idx;
   STRM.next_block_to_request += blocks_to_read;
   STRM.sectors_stolen = 0;
+
+  //if (stream_idx == 0) debug_flag = 1;
 
   mutex_exit(&transfer_mutex);
 }
@@ -194,8 +204,8 @@ void sdring_init(bool byte_swap)
   streams[1].end_ctrl_word_idx = 0;
   streams[1].start_write_addr = sdring_buffer_1;
   streams[1].target_write_addr = sdring_buffer_1;
-  streams[1].blocks_per_read = 4;
-  streams[1].blocks_on_next_read = 4;
+  streams[1].blocks_per_read = 16;
+  streams[1].blocks_on_next_read = 16;
   streams[1].byte_swap = false;
   sdring_configure_ctrl_words(1);
 }
@@ -204,6 +214,14 @@ void sdring_init(bool byte_swap)
 // If start_streaming is false then start the stream by calling reset_stream.
 void sdring_set_stream(uint32_t stream_idx, uint32_t start_block, uint32_t len_bytes, bool start_streaming, bool prime_buffer)
 {
+  // Wait for any active transfers to complete.
+  mutex_enter_blocking(&transfer_mutex);
+  while (!sd_scatter_read_complete(NULL, NULL))
+  {
+    //__breakpoint();
+  }
+  mutex_exit(&transfer_mutex);
+
   STRM.source_start_block = start_block;
   STRM.source_end_block = start_block + (len_bytes / 512) + 1;
   STRM.source_data_len = len_bytes;
@@ -215,18 +233,20 @@ void sdring_set_stream(uint32_t stream_idx, uint32_t start_block, uint32_t len_b
 // Reset the stream to the beginning.
 void sdring_reset_stream(uint32_t stream_idx, bool prime_buffer)
 {
+  // Wait for any active transfers to complete.
+  mutex_enter_blocking(&transfer_mutex);
+  while (!sd_scatter_read_complete(NULL, NULL))
+  {
+    //__breakpoint();
+  }
+  mutex_exit(&transfer_mutex);
+
   // Reset state
   STRM.next_block_to_request = STRM.source_start_block;
   STRM.start_write_addr = STRM.buffer;
   STRM.target_write_addr = STRM.buffer;
   STRM.prev_buffer_ptr = STRM.buffer + SDRING_BUF_LEN_WORDS - 1;
   STRM.buffer_ptr = STRM.buffer;
-
-  // Wait for any active transfers to complete.
-  while (!sd_scatter_read_complete(NULL, NULL))
-  {
-    //__breakpoint();
-  }
 
   if (STRM.end_ctrl_word_idx < (1 << (SDRING_BUF_LOG_SIZE_BYTES - 8)))
   {
@@ -256,6 +276,9 @@ uint32_t sdring_words_available(uint32_t stream_idx)
   {
     // No transfer currently running, start a new one.
     assert(STRM.start_write_addr != STRM.prev_buffer_ptr);
+    STRM.start_write_addr = STRM.target_write_addr;
+    assert(STRM.start_write_addr != STRM.prev_buffer_ptr);
+
     sdring_start_transfer(stream_idx, false);
   }
   else if (STRM.target_write_addr != STRM.start_write_addr)

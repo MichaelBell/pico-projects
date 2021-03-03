@@ -5,7 +5,7 @@
 #include "pico/audio_i2s.h"
 #include "sdring.h"
 
-#define START_SECTOR 6900000
+#define START_SECTOR 10000000
 #define FILE_LEN_BYTES 35127300
 
 #define SDRING_INDEX_MASK_HALFWORDS ((1 << (SDRING_BUF_LOG_SIZE_BYTES - 1)) - 1)
@@ -54,6 +54,8 @@ static struct audio_buffer_pool *producer_pool;
 
 uint32_t audio_buffers_transferred = 0;
 
+extern volatile uint32_t debug_flag;
+
 void audio_reset()
 {
   audio_buffers_transferred = 0;
@@ -88,6 +90,7 @@ void audio_transfer(bool one_buffer_only)
         give_audio_buffer(producer_pool, buffer);
 
         ++audio_buffers_transferred;
+        //debug_flag = 1;
 
         if (one_buffer_only)
             break;

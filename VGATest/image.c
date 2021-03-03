@@ -65,6 +65,8 @@ static bool abort_frame = false;
 
 static uint32_t zero = 0;
 
+volatile uint32_t debug_flag = 0;
+
 static volatile uint16_t core1_row_done = -1;
 
 // Commands to core 0
@@ -74,6 +76,7 @@ static volatile uint16_t core1_row_done = -1;
 // Commands to core 1
 #define CORE1_CMD_DECOMPRESS_GREEN_CHANNEL 10
 #define CORE1_CMD_TRANSFER_AUDIO           11
+#define CORE1_CMD_NONE                     12
 
 #define GRAYSCALE_BIT (1u << 31)
 
@@ -435,8 +438,9 @@ static void __time_critical_func(setup_next_line_ptr_and_len)()
 
   // This is useful for forcing the display to adjust to the picture if you've
   // confused it.
-  if (false && (display_row == 0 || display_row >= DISPLAY_ROWS - 20))
+  if (debug_flag)//(false && (display_row == 0 || display_row >= DISPLAY_ROWS - 20))
   {
+    debug_flag = 0;
     if ((display_row & 1) == 0)
     {
       for (int i = 0; i < 3; ++i)
@@ -453,7 +457,7 @@ static void __time_critical_func(setup_next_line_ptr_and_len)()
         channel[i].ptr = &zero;
       }
     }
-    core1_row_done = display_row;
+    multicore_fifo_push_blocking(CORE1_CMD_TRANSFER_AUDIO);
   }
   else if (image_row < IMAGE_ROWS && display_row >= IMAGE_PAD_TOP) // && display_row < DISPLAY_ROWS - 20)
   {
@@ -473,12 +477,16 @@ static void __time_critical_func(setup_next_line_ptr_and_len)()
   }
   else
   {
-    core1_row_done = display_row;
+    if (image_row == IMAGE_ROWS)
+      multicore_fifo_push_blocking(CORE1_CMD_TRANSFER_AUDIO);
+    else
+      multicore_fifo_push_blocking(CORE1_CMD_NONE);
     for (int i = 0; i < 3; ++i)
     {
       channel[i].len = 1;
       channel[i].ptr = &zero;
     }
+    while (display_row != core1_row_done && !abort_frame);
   }
 }
 
@@ -609,10 +617,6 @@ void setup_interpolators()
   interp_set_config(interp1, 1, &cfg);  
 }
 
-#define FRAMES_BEFORE_CHANGE 4
-#define FIRST_IMAGE_OFFSET 4001000
-#define IMAGE_OFFSET_GAP 1000
-
 #include "image_lens.h"
 
 static uint64_t total_time = 0;
@@ -672,7 +676,7 @@ void __time_critical_func(display_loop)()
             uint32_t image_idx = (frame_number - 1) / FRAMES_BEFORE_CHANGE;
             if (frame_number == NUM_IMAGES * FRAMES_BEFORE_CHANGE) frame_number = 0;
 
-            sdring_set_stream(0, FIRST_IMAGE_OFFSET + (IMAGE_OFFSET_GAP * image_idx), image_lengths[image_idx], true, true);
+            sdring_set_stream(0, FIRST_IMAGE_OFFSET + (IMAGE_OFFSET_GAP * image_idx), image_lengths[image_idx], true, false);
             read_compression_tables();
             setup_next_line_ptr_and_len();
             
@@ -717,17 +721,27 @@ void __time_critical_func(display_core1_loop)()
             compressed_bit_len[1] = multicore_fifo_pop_blocking();
             run_inner_loop(1, 0, 1);
           }
+
+          assert(!multicore_fifo_rvalid());
           core1_row_done = display_row;
 
           if (sdring_eof(0) && !abort_frame)
             audio_transfer(true);
-
+          else
+            sdring_words_available(0);
           break;
-#if 0
+
         case CORE1_CMD_TRANSFER_AUDIO:
           audio_transfer();
+          assert(!multicore_fifo_rvalid());
+          core1_row_done = display_row;
           break;
-#endif
+
+        case CORE1_CMD_NONE:
+          assert(!multicore_fifo_rvalid());
+          core1_row_done = display_row;
+          break;
+
         default:
           __breakpoint();
       }
