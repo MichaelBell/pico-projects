@@ -9,7 +9,7 @@
 
 #include "st7789_lcd.h"
 #include "AnimatedGIF.h"
-#include "duck.h"
+//#include "duck.h"
 
 GIFIMAGE gif;
 PIO pio = pio0;
@@ -24,6 +24,9 @@ int minx = 0;
 int miny = 0;
 int maxx = DISPLAY_WIDTH - 1;
 int maxy = DISPLAY_HEIGHT - 1;
+
+static uint8_t* gif_addr = (uint8_t*)0x10010000;
+static uint32_t gif_len = 5702746;
 
 #define PIXEL_DATA_LEN (32 + ((DISPLAY_WIDTH + 1)>>1))
 uint32_t pixel_data[2][PIXEL_DATA_LEN];
@@ -148,8 +151,9 @@ void flash_stop_dma()
 {
   if (dma_channel_is_busy(flash_dma_chan)) {
     xip_ctrl_hw->stream_ctr = 0;
+    //while (ssi_hw->sr & SSI_SR_BUSY_BITS);
+    (void)*(io_rw_32*)XIP_NOCACHE_NOALLOC_BASE;
     dma_channel_abort(flash_dma_chan);
-    while (ssi_hw->sr & SSI_SR_BUSY_BITS);
     //sleep_us(1);  // My transfer becomes unreliable if I remove this line
   }
 }
@@ -171,6 +175,7 @@ int32_t gifRead(GIFFILE *pFile, uint8_t *pBuf, int32_t iLen)
       uint32_t read_end_addr = ((uintptr_t)flash_read_buffer + buffer_offset + iBytesRead - 1) | 3;
       while (dma_channel_is_busy(flash_dma_chan) && dma_hw->ch[flash_dma_chan].write_addr < read_end_addr);
 
+      asm volatile ("" ::: "memory");
       memcpy(pBuf, (uint8_t*)flash_read_buffer + buffer_offset, iBytesRead);
       pFile->iPos += iBytesRead;
       if (buffer_offset + iBytesRead > FLASH_BUFFER_LEN - 259) {
@@ -205,8 +210,8 @@ int main()
   GIF_begin(&gif, LITTLE_ENDIAN_PIXELS, GIF_PALETTE_RGB565);
   while (1) {
     flash_stop_dma();
-    flash_start_dma((uint8_t *)duck_gif);
-    if (!GIF_openRAM(&gif, (uint8_t *)duck_gif, sizeof(duck_gif), draw)) {
+    flash_start_dma(gif_addr);
+    if (!GIF_openRAM(&gif, (uint8_t *)gif_addr, gif_len, draw)) {
       printf("Open failed\n");
     } 
     else

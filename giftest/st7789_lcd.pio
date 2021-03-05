@@ -19,40 +19,47 @@
 ; be the number of bits to be sent minus one.
 
 ; Data on OUT pin 0
+;
 ; Clock on side-set pin 0
 ; CS on side-set pin 1
-; D/C on side-set pin 2
+;
+; D/C on set pin 0
 
 top:
-    out x, 24           side 0b110  ; Read data length
-    jmp !x, top         side 0b110  ; Discard if we just read all zeros
+    set pins, 1         side 0b10  ; D/C pin high when stalled
+    out x, 24           side 0b10  ; Read data length
+    jmp !x, top         side 0b10  ; Discard if we just read all zeros
 
-    set y, 7            side 0b110  ; Send 8 bit command
+    set y, 7            side 0b10  ; Send 8 bit command
+    set pins, 0         side 0b10  ; Start cmd
 cmd_loop:
-    out pins, 1         side 0b000
-    jmp y--, cmd_loop   side 0b001
+    out pins, 1         side 0b00
+    jmp y--, cmd_loop   side 0b01
 
-    jmp x--, data_next  side 0b000  ; Data length 1 means no data,
+    jmp x--, data_next  side 0b00  ; Data length 1 means no data,
 data_next:                          ; we never just have 1 bit
-    jmp !x, top         side 0b000  ; If no data go to next command
+    jmp !x, top         side 0b00  ; If no data go to next command
 
+    set pins, 1         side 0b00  ; Start data
 data_loop:                          ; Send data
-    out pins, 1         side 0b100  
-    jmp x--, data_loop  side 0b101
+    out pins, 1         side 0b00  
+    jmp x--, data_loop  side 0b01
  
 
 % c-sdk {
 
-static inline void st7789_lcd_program_init(PIO pio, uint sm, uint offset, uint data_pin, uint clk_pin, float clk_div) {
+static inline void st7789_lcd_program_init(PIO pio, uint sm, uint offset, uint data_pin, uint clk_pin, uint dc_pin, float clk_div) {
     pio_gpio_init(pio, data_pin);
     pio_gpio_init(pio, clk_pin);
     pio_gpio_init(pio, clk_pin + 1);
-    pio_gpio_init(pio, clk_pin + 2);
+    pio_gpio_init(pio, dc_pin);
     pio_sm_set_consecutive_pindirs(pio, sm, data_pin, 1, true);
-    pio_sm_set_consecutive_pindirs(pio, sm, clk_pin, 3, true);
+    pio_sm_set_consecutive_pindirs(pio, sm, clk_pin, 2, true);
+    pio_sm_set_consecutive_pindirs(pio, sm, dc_pin, 1, true);
     pio_sm_config c = st7789_lcd_program_get_default_config(offset);
     sm_config_set_sideset_pins(&c, clk_pin);
     sm_config_set_out_pins(&c, data_pin, 1);
+    sm_config_set_set_pins(&c, dc_pin, 1);
     sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_TX);
     sm_config_set_clkdiv(&c, clk_div);
     sm_config_set_out_shift(&c, false, true, 32);
