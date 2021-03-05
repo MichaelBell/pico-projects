@@ -1,0 +1,6 @@
+{
+  "files.associations": {
+    "*.pio": "asm",
+    "systick.h": "c"
+  }
+}

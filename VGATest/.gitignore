@@ -1,0 +1,8 @@
+build/
+*.gif
+*.huf
+*.dat
+frames/
+feeding_duck*.h
+pcrane*.h
+image_lens.h

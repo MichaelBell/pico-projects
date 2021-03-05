@@ -1,0 +1,106 @@
+; Copyright (C) 2021 Michael Bell
+
+; One channel of 5 bit pixel colour output
+;
+; Idea is to run 3 of these channels simultaneously for RGB
+;
+; Encoding is packed into 32-bit words:
+; 2 bits: Type:
+;   00: End of line, data must be zero.
+;   01: 3 RLE encoded blocks, 5 bits pixel, 5 run length - 2 (min length is 2).
+;   11: 6 raw 5-bit pixels
+; 30 bits data
+; 1 pixel written per 2 clocks.
+
+.program vga_channel
+.origin 0
+  jmp end      ; PC = 0 -> End of line
+
+  out pins, 5  ; PC = 1 -> RLE   ; Pixel 1A
+  jmp rle
+
+  out pins, 5  ; PC = 3 -> Raw   ; Pixel 1
+  set y, 3
+raw_loop:
+  out pins, 5              ; Pixel 2,3,4,5
+  jmp y--, raw_loop
+  out pins, 5              ; Pixel 6
+  out pc, 2
+
+rle:
+  out x, 5                 ; Pixel 2A
+rleAL:
+  jmp x--, rleAL2
+
+rleB:
+  out pins, 5              ; Pixel 1B
+  out x, 5
+rleBL:
+  jmp x--, rleBL [1]       ; Pixel B
+
+rleC:
+  out pins, 5              ; Pixel 1C
+  out x, 5
+rleCL2:
+  jmp x--, rleCL           ; Pixel C
+  out pc, 2
+
+rleAL2:
+  jmp rleAL                ; Pixel A
+
+rleCL:
+  jmp rleCL2
+
+PUBLIC end:
+  mov pins, null
+  out x, 32
+  wait 1 irq 4
+  pull noblock
+  out pc, 2
+
+; Set two sync pins based and then wait base don input word:
+; 31: VSync
+; 30: HSync
+; 29-16: Delay duration in pixel clocks, total loop duration is delay + 3
+; 15-0:  Instruction to run after delay, sensible options are:
+;        nop   : 0xa042 ; Do nothing
+;        irq 1 : 0xc001 ; Signal to CPU requesting next line
+;        irq 4 : 0xc004 ; Signal to data SMs to start.
+.program vga_timing
+  out pins, 2      ; Set VS & HS
+  out x, 14        ; Loop count
+sync_loop:
+  jmp x--, sync_loop [1]
+  out exec, 16 [1]
+
+% c-sdk {
+
+static inline void vga_channel_program_init(PIO pio, uint sm, uint base_pin, uint16_t clk_div) {
+  for (int i = 0; i < 5; ++i) {
+    pio_gpio_init(pio, base_pin + i);
+  }
+  pio_sm_set_consecutive_pindirs(pio, sm, base_pin, 5, true);
+
+  pio_sm_config c = vga_channel_program_get_default_config(0);
+  sm_config_set_out_pins(&c, base_pin, 5);
+  sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_TX);
+  sm_config_set_clkdiv_int_frac(&c, clk_div, 0);
+  sm_config_set_out_shift(&c, false, true, 32);
+  pio_sm_init(pio, sm, 0, &c);
+}
+
+static inline void vga_timing_program_init(PIO pio, uint sm, uint offset, uint sync_base_pin) {
+  pio_gpio_init(pio, sync_base_pin);
+  pio_gpio_init(pio, sync_base_pin + 1);
+  pio_sm_set_consecutive_pindirs(pio, sm, sync_base_pin, 2, true);
+
+  pio_sm_config c = vga_timing_program_get_default_config(offset);
+  sm_config_set_out_pins(&c, sync_base_pin, 2);
+  sm_config_set_out_shift(&c, false, true, 32);
+  sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_TX);
+  sm_config_set_clkdiv(&c, 1.0f);
+  pio_sm_init(pio, sm, offset, &c);
+  pio_sm_set_enabled(pio, sm, true);  
+}
+
+%}
