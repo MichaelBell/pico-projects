@@ -38,6 +38,7 @@ target_link_libraries(giftest pico_stdlib)
 target_link_libraries(giftest
         hardware_pio
         hardware_dma
+        hardware_pwm
         )
 
 pico_add_extra_outputs(giftest)
