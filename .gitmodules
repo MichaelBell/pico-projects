@@ -1,0 +1,3 @@
+[submodule "lasertest/VL53L1X"]
+	path = lasertest/VL53L1X
+	url = git@github.com:MichaelBell/pico-VL53L1X.git
