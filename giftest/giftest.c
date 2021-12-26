@@ -6,10 +6,11 @@
 #include "hardware/regs/ssi.h"
 #include "hardware/structs/xip_ctrl.h"
 #include "hardware/structs/ssi.h"
+#include "hardware/pwm.h"
 
 #include "st7789_lcd.h"
 #include "AnimatedGIF.h"
-#include "duck.h"
+//#include "duck.h"
 
 GIFIMAGE gif;
 PIO pio = pio0;
@@ -24,6 +25,9 @@ int minx = 0;
 int miny = 0;
 int maxx = DISPLAY_WIDTH - 1;
 int maxy = DISPLAY_HEIGHT - 1;
+
+static uint8_t* gif_addr = (uint8_t*)0x10010000;
+static uint32_t gif_len = 2164211;
 
 #define PIXEL_DATA_LEN (32 + ((DISPLAY_WIDTH + 1)>>1))
 uint32_t pixel_data[2][PIXEL_DATA_LEN];
@@ -148,8 +152,9 @@ void flash_stop_dma()
 {
   if (dma_channel_is_busy(flash_dma_chan)) {
     xip_ctrl_hw->stream_ctr = 0;
+    //while (ssi_hw->sr & SSI_SR_BUSY_BITS);
+    (void)*(io_rw_32*)XIP_NOCACHE_NOALLOC_BASE;
     dma_channel_abort(flash_dma_chan);
-    while (ssi_hw->sr & SSI_SR_BUSY_BITS);
     //sleep_us(1);  // My transfer becomes unreliable if I remove this line
   }
 }
@@ -171,6 +176,7 @@ int32_t gifRead(GIFFILE *pFile, uint8_t *pBuf, int32_t iLen)
       uint32_t read_end_addr = ((uintptr_t)flash_read_buffer + buffer_offset + iBytesRead - 1) | 3;
       while (dma_channel_is_busy(flash_dma_chan) && dma_hw->ch[flash_dma_chan].write_addr < read_end_addr);
 
+      asm volatile ("" ::: "memory");
       memcpy(pBuf, (uint8_t*)flash_read_buffer + buffer_offset, iBytesRead);
       pFile->iPos += iBytesRead;
       if (buffer_offset + iBytesRead > FLASH_BUFFER_LEN - 259) {
@@ -190,9 +196,24 @@ int32_t gifRead(GIFFILE *pFile, uint8_t *pBuf, int32_t iLen)
     return iBytesRead;
 }
 
+const uint LED_BRIGHTNESS[3] = { 240, 248, 230 };
+
 int main()
 {
   stdio_init_all();
+
+  gpio_set_function(TINY2040_LED_R_PIN, GPIO_FUNC_PWM);
+  gpio_set_function(TINY2040_LED_G_PIN, GPIO_FUNC_PWM);
+  gpio_set_function(TINY2040_LED_B_PIN, GPIO_FUNC_PWM);
+  pwm_set_wrap(pwm_gpio_to_slice_num(TINY2040_LED_R_PIN), 255);
+  pwm_set_wrap(pwm_gpio_to_slice_num(TINY2040_LED_B_PIN), 255);
+  pwm_set_clkdiv(pwm_gpio_to_slice_num(TINY2040_LED_R_PIN), 128.f);
+  pwm_set_clkdiv(pwm_gpio_to_slice_num(TINY2040_LED_B_PIN), 128.f);
+  pwm_set_gpio_level(TINY2040_LED_R_PIN, 256);
+  pwm_set_gpio_level(TINY2040_LED_G_PIN, 256);
+  pwm_set_gpio_level(TINY2040_LED_B_PIN, 256);
+  pwm_set_enabled(pwm_gpio_to_slice_num(TINY2040_LED_R_PIN), true);
+  pwm_set_enabled(pwm_gpio_to_slice_num(TINY2040_LED_B_PIN), true);
 
   st7789_init(pio, sm);
   st7789_create_dma_channels(pio, sm, chan);
@@ -204,9 +225,14 @@ int main()
 
   GIF_begin(&gif, LITTLE_ENDIAN_PIXELS, GIF_PALETTE_RGB565);
   while (1) {
+    uint32_t frame_num = 0;
+    gpio_put(TINY2040_LED_R_PIN, 1);
+    gpio_put(TINY2040_LED_G_PIN, 1);
+    gpio_put(TINY2040_LED_B_PIN, 1);
+
     flash_stop_dma();
-    flash_start_dma((uint8_t *)duck_gif);
-    if (!GIF_openRAM(&gif, (uint8_t *)duck_gif, sizeof(duck_gif), draw)) {
+    flash_start_dma(gif_addr);
+    if (!GIF_openRAM(&gif, (uint8_t *)gif_addr, gif_len, draw)) {
       printf("Open failed\n");
     } 
     else
@@ -220,12 +246,17 @@ int main()
       int delay = 10;
       absolute_time_t start_time = get_absolute_time();
       while (GIF_playFrame(&gif, &delay)) {
-        uint32_t frame_time = absolute_time_diff_us(start_time, get_absolute_time()) / 1000;
+        pwm_set_gpio_level(TINY2040_LED_R_PIN + ((frame_num>>1) % 3), 256);
+        ++frame_num;
+        pwm_set_gpio_level(TINY2040_LED_R_PIN + ((frame_num>>1) % 3), LED_BRIGHTNESS[(frame_num>>1) % 3]);
+
+        uint32_t frame_time = absolute_time_diff_us(start_time, get_absolute_time());
+        delay *= 1000;
         delay -= frame_time;
-        printf("Frame time %dms\n", frame_time);
+        printf("Frame time %dus\n", frame_time);
         delay -= 100;
         if (delay > 0)
-          sleep_ms(delay);
+          sleep_us(delay);
 
         start_time = get_absolute_time();
       }

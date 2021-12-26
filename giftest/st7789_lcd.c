@@ -17,12 +17,12 @@
 #define SCREEN_WIDTH 240
 #define SCREEN_HEIGHT 240
 
-#define PIN_DIN 0
-#define PIN_CLK 1
-#define PIN_CS 2  // Must be CLK + 1
-#define PIN_DC 3  // Must be CLK + 2
-#define PIN_RESET 4
-#define PIN_BL 5
+#define PIN_DIN 5
+#define PIN_CLK 6
+#define PIN_CS 7  // Must be CLK + 1
+#define PIN_DC 4
+#define PIN_RESET 9
+#define PIN_BL 3
 
 #define SERIAL_CLK_DIV 2.f
 
@@ -70,7 +70,7 @@ static inline void lcd_write_cmd(PIO pio, uint sm, const uint8_t *cmd, size_t co
 
 void st7789_init(PIO pio, uint sm) {
     uint offset = pio_add_program(pio, &st7789_lcd_program);
-    st7789_lcd_program_init(pio, sm, offset, PIN_DIN, PIN_CLK, SERIAL_CLK_DIV);
+    st7789_lcd_program_init(pio, sm, offset, PIN_DIN, PIN_CLK, PIN_DC, SERIAL_CLK_DIV);
 
     gpio_init(PIN_RESET);
     gpio_init(PIN_BL);
