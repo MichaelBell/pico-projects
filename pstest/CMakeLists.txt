@@ -35,6 +35,7 @@ target_link_libraries(pstest pico_stdlib)
 target_link_libraries(pstest
         hardware_dma
         hardware_pio
+        hardware_pwm
         )
 
 pico_add_extra_outputs(pstest)

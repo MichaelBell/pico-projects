@@ -8,34 +8,34 @@
 .side_set 2
 
 ; This transmits 32-bit DMA'd data of the form:
-; Header: | 24 bits            | 8 bits  |
-;         | Data bit count - 1 | Command |
+; Header: | 24 bits         | 8 bits  |
+;         | Data bit count  | Command |
 ; Data: (data bit count)/8 data bytes
 ; Bytes are sent from MSB first, so the last word should be right aligned
 ; if the data byte count isn't a multiple of 4.
 ; If the data byte count is not a multiple of 4 then the remaining part
 ; of the word is discarded.
-; If no data is to be sent "data bit count - 1" should be 0, else it should
-; be the number of bits to be sent minus one.
+; If no data is to be sent "data bit count" should be 1, else it should
+; be the number of bits to be sent.
 
 ; Data on OUT pin 0
 ; Clock on side-set pin 1
 ; CS on side-set pin 0
 ; D/C on SET pin 0
 
-top:
-    set pins, 0         side 0b00  ; Set D/C to command
+    set pins, 0         side 0b01  ; Set D/C to command
+next_cmd:
+    set y, 7            side 0b01  ; Send 8 bit command
+discard:
     out x, 24           side 0b01  ; Read data length
-    jmp !x, top         side 0b01  ; Discard if we just read all zeros
+    jmp x--, cmd_loop   side 0b01  ; Discard if we just read all zeros
+    jmp discard         side 0b01
 
-    set y, 7            side 0b00  ; Send 8 bit command
 cmd_loop:
     out pins, 1         side 0b00
     jmp y--, cmd_loop   side 0b10
 
-    jmp x--, data_next  side 0b00  ; Data length 1 means no data,
-data_next:                         ; we never just have 1 bit
-    jmp !x, top         side 0b00  ; If no data go to next command
+    jmp !x, next_cmd    side 0b00  ; If no data go to next command
 
     set pins, 1         side 0b00  ; Set D/C to data
 data_loop:                         ; Send data

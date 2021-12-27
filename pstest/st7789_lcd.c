@@ -11,6 +11,7 @@
 #include "hardware/pio.h"
 #include "hardware/gpio.h"
 #include "hardware/dma.h"
+#include "hardware/pwm.h"
 
 #include "st7789_lcd.h"
 #include "st7789_lcd.pio.h"
@@ -35,7 +36,7 @@ static const uint8_t st7789_init_seq[] = {
         1, 10, 0x11,                         // Exit sleep mode
         2, 2, 0x3a, 0x55,                    // Set colour mode to 16 bit
         2, 0, 0x35, 0x00,                    // Enable VSYNC output
-
+        3, 0, 0x44, 0x00, 0xf0,              // VSYNC after 240 lines
         2, 0, 0xC6, 0x15,                    // 50Hz display
         2, 0, 0x36, 0x00,                    // Set MADCTL: row then column, refresh is bottom to top ????
         1, 2, 0x21,                          // Inversion on, then 10 ms delay (supposedly a hack?)
@@ -138,7 +139,7 @@ static void st7789_create_dma_channels(ST7789* st)
   st->ctrl_ctrl = dma_hw->ch[st->data_chan].ctrl_trig;
 }
 
-static void st7789_write_tcb(ST7789* st, uint32_t* data_ptr, uint32_t word_count, bool repeat)
+static void st7789_write_tcb(ST7789* st, const uint32_t* data_ptr, uint32_t word_count, bool repeat)
 {
   uint ctrl = st->ctrl_ctrl;
   if (!repeat) ctrl |= DMA_CH0_CTRL_TRIG_INCR_READ_BITS;
@@ -161,13 +162,16 @@ void st7789_init(ST7789* st, PIO pio, uint sm, uint32_t* data_buf, uint32_t* ctr
     uint offset = pio_add_program(pio, &st7789_lcd_program);
     st7789_lcd_program_init(pio, sm, offset, PIN_DIN, PIN_CS, PIN_DC, SERIAL_CLK_DIV);
 
+    pwm_config cfg = pwm_get_default_config();
+    pwm_set_wrap(pwm_gpio_to_slice_num(PIN_BL), 65535);
+    pwm_init(pwm_gpio_to_slice_num(PIN_BL), &cfg, true);
+    gpio_set_function(PIN_BL, GPIO_FUNC_PWM);
+    pwm_set_gpio_level(PIN_BL, 0);
+
     gpio_init(PIN_RESET);
-    gpio_init(PIN_BL);
     gpio_set_dir(PIN_RESET, GPIO_OUT);
-    gpio_set_dir(PIN_BL, GPIO_OUT);
 
     gpio_put(PIN_RESET, 1);
-    gpio_put(PIN_BL, 0);
 
     const uint8_t *cmd = st7789_init_seq;
     while (*cmd) {
@@ -176,7 +180,7 @@ void st7789_init(ST7789* st, PIO pio, uint sm, uint32_t* data_buf, uint32_t* ctr
         cmd += *cmd + 2;
     }
 
-    gpio_put(PIN_BL, 1);
+    pwm_set_gpio_level(PIN_BL, 10000);
 
     st7789_create_dma_channels(st);
 }
@@ -236,7 +240,7 @@ void st7789_repeat_pixel(ST7789* st, uint16_t pixel, uint repeats)
   st7789_write_tcb(st, st->data_ptr++, (repeats+1) >> 1, true);
 }
 
-void st7789_dma_pixel_data(ST7789* st, uint32_t* pixels, uint len)
+void st7789_dma_pixel_data(ST7789* st, const uint32_t* pixels, uint len)
 {
   st7789_write_tcb(st, pixels, len, false);
 }

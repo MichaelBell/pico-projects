@@ -29,4 +29,4 @@ void st7789_wait_for_transfer_complete(ST7789* st);
 void st7789_repeat_pixel(ST7789* st, uint16_t pixel, uint repeats);
 
 // Queue pixel data from memory, note len is data length in 32-bit words, not pixels.
-void st7789_dma_pixel_data(ST7789* st, uint32_t* pixels, uint len);
+void st7789_dma_pixel_data(ST7789* st, const uint32_t* pixels, uint len);
