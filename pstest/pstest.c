@@ -1,72 +1,65 @@
 #include <stdio.h>
 #include "pico/stdlib.h"
 
-#include "hardware/dma.h"
+#include "display.h"
+
 #include "hardware/gpio.h"
-#include "hardware/pio.h"
 
-#include "st7789_lcd.h"
-
-ST7789 st;
-
-#define DISPLAY_ROWS 240
-#define DISPLAY_COLS 240
+PS_DISPLAY disp;
 
 int main()
 {
   stdio_init_all();
 
-  gpio_init_mask(0xffe100);
-  gpio_set_dir_in_masked(0xff0100);
-  for (uint32_t i = 0; i < 24; i++)
+  gpio_init_mask(0xffe000);
+  gpio_set_dir_in_masked(0xff0000);
+  gpio_set_dir_out_masked(0x00e000);
+  for (uint32_t i = 16; i < 24; i++)
   {
-    if ((1 << i) & 0xff0100) gpio_pull_up(i);
+    gpio_pull_up(i);
   }
 
-  st = st7789_init(pio0, 0);
+  ps_display_init(&disp);
 
-  st7789_start_pixels(&st, DISPLAY_ROWS * DISPLAY_COLS);
-  st7789_dma_repeat_pixel_one_channel(&st, 0, DISPLAY_ROWS * DISPLAY_COLS);
-
-  uint8_t posx = 117;
-  uint8_t posy = 117;
-  const uint8_t width = 4;
-  const uint16_t colour = 0xf800;
-  st7789_start_pixels_at(&st, posx, posy, width, width);
-  st7789_dma_repeat_pixel_one_channel(&st, colour, width * width);
+  psd_vec pos;
+  pos.x = 117;
+  pos.y = 117;
+  const psd_colour red = {.r = 0x1f};
+  const psd_colour blue = {.b = 0x1f};
+  const psd_colour black = {.c = 0};
+  psd_box ballbox;
+  ballbox.tl = pos;
+  ballbox.br.x = pos.x + 4;
+  ballbox.br.y = pos.y + 4;
+  ps_display_draw_frect(&disp, ballbox, red);
+  ps_display_render(&disp);
 
   while (1)
   {
     absolute_time_t start_time = get_absolute_time();
 
-    uint8_t newposx = posx;
-    uint8_t newposy = posy;
+    psd_vec newpos = pos;
 
-    if (gpio_get(PICOSYSTEM_SW_UP_PIN) == 0) newposy--;
-    else if (gpio_get(PICOSYSTEM_SW_DOWN_PIN) == 0) newposy++;
-    if (gpio_get(PICOSYSTEM_SW_LEFT_PIN) == 0) newposx--;
-    else if (gpio_get(PICOSYSTEM_SW_RIGHT_PIN) == 0) newposx++;
+    if (gpio_get(PICOSYSTEM_SW_UP_PIN) == 0) newpos.y--;
+    else if (gpio_get(PICOSYSTEM_SW_DOWN_PIN) == 0) newpos.y++;
+    if (gpio_get(PICOSYSTEM_SW_LEFT_PIN) == 0) newpos.x--;
+    else if (gpio_get(PICOSYSTEM_SW_RIGHT_PIN) == 0) newpos.x++;
 
-    if (newposx != posx || newposy != posy)
+    if (newpos.x != pos.x || newpos.y != pos.y)
     {
-      st7789_start_pixels_at(&st, posx, posy, width, width);
-      st7789_dma_repeat_pixel_one_channel(&st, 0, width * width);
-      st7789_start_pixels_at(&st, newposx, newposy, width, width);
-      st7789_dma_repeat_pixel_one_channel(&st, 0xf800, width * width);
+      ballbox.tl = pos;
+      ballbox.br.x = pos.x + 4;
+      ballbox.br.y = pos.y + 4;
+      ps_display_draw_frect(&disp, ballbox, black);
 
-      posx = newposx;
-      posy = newposy;
+      pos = newpos;
+      ballbox.tl = pos;
+      ballbox.br.x = pos.x + 4;
+      ballbox.br.y = pos.y + 4;
+      ps_display_draw_frect(&disp, ballbox, red);
     }
 
-    uint32_t frame_time = absolute_time_diff_us(start_time, get_absolute_time());
-
-    int delay = 20000;
-    delay -= absolute_time_diff_us(start_time, get_absolute_time());
-    if (delay > 0)
-      sleep_us(delay);
-
-    start_time = get_absolute_time();
-
+    ps_display_render(&disp);
   }
 
   return 0;

@@ -18,7 +18,7 @@ pico_sdk_init()
 
 # Add executable. Default name is the project name, version 0.1
 
-add_executable(pstest pstest.c st7789_lcd.c )
+add_executable(pstest pstest.c display.c st7789_lcd.c )
 
 pico_set_program_name(pstest "pstest")
 pico_set_program_version(pstest "0.1")

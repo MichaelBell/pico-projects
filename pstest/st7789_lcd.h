@@ -1,35 +1,32 @@
+#include "hardware/pio.h"
+
 typedef struct {
   PIO pio;
   uint sm;
-  uint chan[2];
-  uint chan_idx;
+  uint data_chan;
+  uint ctrl_chan;
+  uint ctrl_ctrl;
+  uint32_t* data_buf;
+  uint32_t* ctrl_buf;
+  uint32_t* data_ptr;
+  uint32_t* ctrl_ptr;
+  volatile bool transfer_in_progress;
 } ST7789;
 
 // Setup the display and return CB
-ST7789 st7789_init(PIO pio, uint sm);
+void st7789_init(ST7789* st, PIO pio, uint sm, uint32_t* data_buf, uint32_t* ctrl_buf);
 
-// Restart pixel output synchronously, pixels drawn at last location
-// (or full screen if no location ever given) 
-void st7789_start_pixels(ST7789* st, uint32_t num_pixels);
+// Queue data transfer into a given box
+void st7789_start_pixels_at(ST7789* st, uint8_t x, uint8_t y, uint8_t maxx, uint8_t maxy);
 
-// Restart pixel output synchronously, at a given location
-void st7789_start_pixels_at(ST7789* st, uint8_t x, uint8_t y, uint8_t width, uint8_t height);
+// Write all queued data
+void st7789_trigger_transfer(ST7789* st);
 
-// Write a command to restart pixel output into a buffer for DMA
-uint32_t st7789_add_pixels_at_cmd(uint32_t* buffer, uint8_t x, uint8_t y, uint8_t width, uint8_t height);
+// Wait for previous transfer to complete, this must be called before queueing any further commands
+void st7789_wait_for_transfer_complete(ST7789* st);
 
-// Send data to the display via DMA, chaining to the previous DMA
-void st7789_dma_buffer(ST7789* st, const uint32_t* data, uint len);
+// Queue a single pixel multiple times.  Repeats is the number of times the pixel is repeated.
+void st7789_repeat_pixel(ST7789* st, uint16_t pixel, uint repeats);
 
-// Send a single pixel multiple times, chaining to the previous DMA
-void st7789_dma_repeat_pixel(ST7789* st, uint16_t pixel, uint repeats);
-
-// Wait for next DMA channel to finish previous transfer, i.e. wait for last but one
-// transfer to finish.  After this point you can reuse the buffer with index chan_idx.
-static inline void st7789_wait_for_next_dma_chan(ST7789* st) {
-    dma_channel_wait_for_finish_blocking(st->chan[st->chan_idx]);
-}
-
-// Wait for previous DMA to finish, then send pixels
-void st7789_dma_buffer_one_channel(ST7789* st, const uint32_t* data, uint len);
-void st7789_dma_repeat_pixel_one_channel(ST7789* st, uint16_t pixel, uint repeats);
+// Queue pixel data from memory, note len is data length in 32-bit words, not pixels.
+void st7789_dma_pixel_data(ST7789* st, uint32_t* pixels, uint len);
