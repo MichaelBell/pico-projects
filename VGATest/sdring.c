@@ -77,9 +77,7 @@ static void sdring_start_transfer(uint32_t stream_idx, bool start_other_stream_i
     return;
   }
 
-  // Previous transfers are complete
-  //streams[0].start_write_addr = streams[0].target_write_addr;
-  //streams[1].start_write_addr = streams[1].target_write_addr;
+  // Previous transfer is complete
   STRM.start_write_addr = STRM.target_write_addr;
 
   if (sdring_eof(stream_idx)) 

@@ -34,7 +34,7 @@ typedef struct
   psd_sprite* sprite;
 } ball;
 
-#define NUM_BALLS 120
+#define NUM_BALLS 250
 ball balls[NUM_BALLS];
 
 int main()

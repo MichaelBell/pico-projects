@@ -1,6 +1,6 @@
 {
   "files.associations": {
-    "*.pio": "asm",
+    "*.pio": "pio",
     "pio.h": "c",
     "sd_card.h": "c"
   }
